@@ -63,10 +63,6 @@ class CityConfig:
     utm_zone : int | None
         UTM zone number used for the WGS-84 → UTM projection.
         ``None`` ⇒ auto-detect from GIS shapefile coordinates.
-    gemini_api_key : str | None
-        Google Gemini API key for LLM-assisted address parsing.
-    geocoding_api_key : str | None
-        Google Maps Geocoding API key.
     """
 
     # ── Required paths ───────────────────────────────────────────────────

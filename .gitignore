@@ -1,18 +1,22 @@
-# ── Pipeline output & caches (large data files) ──
-results/*.csv
-results/*.json
+﻿# 🛑 Pipeline output & caches (large data files) 🛑
+results/
+models/
 
-# ── Python bytecode ──
+# 🛑 Test and sample data 🛑
+sample_data/
+Barnala/
+Barnala_CD/
+
+# 🛑 Python bytecode 🛑
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.class
 
-# ── Environment / secrets ──
+# 🛑 Environment / secrets 🛑
 .env
 *.env
+.venv/
 
-# ── OS junk ──
+# 🛑 OS junk 🛑
 Thumbs.db
 .DS_Store
-
-results/

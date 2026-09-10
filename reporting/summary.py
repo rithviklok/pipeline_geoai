@@ -200,30 +200,4 @@ def print_summary(summary: dict):
         pct = count / summary["total_mseva"] * 100
         print(f"  {method:30s}: {count:>6,} ({pct:>5.1f}%)")
         
-    print("\nAddress Parsing Quality (LLM):")
-    if summary.get("parser_quality"):
-        for tier, count in sorted(summary["parser_quality"].items()):
-            pct = count / summary["total_mseva"] * 100
-            print(f"  {tier:30s}: {count:>6,} ({pct:>5.1f}%)")
-    else:
-        print("  Not available")
-
-    print("\nGeocoding Accuracy (Google):")
-    if summary.get("geocode_quality"):
-        total_geocoded = sum(summary["geocode_quality"].values())
-        for acc, count in sorted(summary["geocode_quality"].items()):
-            pct = count / total_geocoded * 100 if total_geocoded else 0
-            label = acc
-            # Add context to common Google location types
-            if acc == "ROOFTOP":
-                label = "ROOFTOP (Exact House)"
-            elif acc == "GEOMETRIC_CENTER":
-                label = "GEOMETRIC_CENTER (Street/Locality)"
-            elif acc == "APPROXIMATE":
-                label = "APPROXIMATE (City/Locality)"
-            
-            print(f"  {label:30s}: {count:>6,} ({pct:>5.1f}%)")
-    else:
-        print("  Not available")
-        
     print("=" * 70)
