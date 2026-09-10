@@ -1,0 +1,18 @@
+# ── Pipeline output & caches (large data files) ──
+results/*.csv
+results/*.json
+
+# ── Python bytecode ──
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Environment / secrets ──
+.env
+*.env
+
+# ── OS junk ──
+Thumbs.db
+.DS_Store
+
+results/
