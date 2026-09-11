@@ -285,6 +285,26 @@ class QualityAssessor:
         report["gis"]["scores"]["invalid_geom_pct"] = round(invalid / checked * 100, 1) if checked else 0
         report["gis"]["scores"]["empty_geom_pct"] = round(empty / checked * 100, 1) if checked else 0
 
+        # Technical-problems review (P4): property_usage/property_type feed
+        # the dashboard's per-category breakdown. They don't block matching,
+        # so they're not in the critical-field list above, but a field that
+        # is missing or near-empty in the SOURCE data (as observed for real
+        # Barnala GIS data: Property_U was ~100% "NA"/blank) silently ships
+        # a dashboard with an unusable category breakdown unless flagged
+        # here first.
+        for key in ("property_usage", "property_type"):
+            field_info = report["gis"]["fields"].get(key)
+            if field_info is None:
+                report["warnings"].append(
+                    f"GIS field '{key}' not found/mapped in the source shapefile — "
+                    f"the dashboard's '{key}' category breakdown will be unavailable"
+                )
+            elif field_info["pct"] < 20:
+                report["warnings"].append(
+                    f"GIS field '{key}' is only {field_info['pct']:.1f}% filled in the source data — "
+                    f"the dashboard's '{key}' category breakdown will be mostly blank"
+                )
+
     def _assess_electricity(self, df: pd.DataFrame, cols: dict, report: dict):
         n = len(df)
         lat_col = cols.get("latitude")
@@ -365,6 +385,16 @@ class QualityAssessor:
         inv = report["gis"].get("scores", {}).get("invalid_geom_pct", 0)
         if inv > 10:
             score -= 10
+
+        # Near-empty downstream-important fields (P4): doesn't block
+        # matching, but produces an unusable dashboard category breakdown.
+        # Modest deduction (same scale as the address-completeness penalty)
+        # so it can nudge GO -> CAUTION without alone forcing a NO-GO.
+        for key in ("property_usage", "property_type"):
+            field_info = gfields.get(key)
+            pct = field_info["pct"] if field_info else 0
+            if pct < 20:
+                score -= 10
 
         report["score"] = max(0, score)
 

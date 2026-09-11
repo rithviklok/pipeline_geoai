@@ -439,18 +439,22 @@ class GeoAITrainer:
     # ── Step 5: Generate Embeddings ────────────────────────────
 
     def _generate_embeddings(self):
-        """Generate SentenceTransformer embeddings for all text fields."""
+        """Generate SentenceTransformer embeddings for matching.
+
+        Only `full_address` is embedded. Earlier versions also embedded
+        address/owner/locality/road/ward separately (~85MB each per city),
+        but GeoAIInferencer._semantic_match only ever reads
+        full_address_embeddings for the FAISS search -- the other five were
+        computed, stored, and reloaded every run without being used by any
+        matcher. Removed per the pipeline_geoai technical-problems review
+        (P7); confirmed via a repo-wide search that nothing else reads them.
+        """
         print("  Generating embeddings...")
         model = load_model(self.config.model_name)
         gdf = self._gdf
         bs = self.config.batch_size
 
         fields = {
-            "address": "address",
-            "owner": "owner_name",
-            "locality": "locality",
-            "road": "road_name",
-            "ward": "ward_no",
             "full_address": "full_address",
         }
 

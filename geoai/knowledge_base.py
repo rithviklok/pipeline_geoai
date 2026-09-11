@@ -1,15 +1,23 @@
 """
 Knowledge Base persistence, caching, and validation.
 
-The KB is a directory containing 18 artifacts produced by training:
+The KB is a directory containing artifacts produced by training:
   - house_database.csv, locality_statistics.csv, locality_bbox.csv
   - locality_polygons.geojson
-  - 6 embedding pickles
+  - full_address_embeddings.pkl (the only embedding type actually used by
+    GeoAIInferencer's FAISS search -- see trainer.py's _generate_embeddings
+    docstring for why the other 5 per-field embedding types were removed)
   - kd_tree.pkl, ball_tree.pkl, locality_rtree.pkl
   - faiss_index.bin
   - municipality_coordinates.npy
   - municipality_statistics.json, municipality_summary.csv
   - training_config.json
+
+Note: older KB directories on disk may still contain
+address_embeddings.pkl / owner_embeddings.pkl / locality_embeddings.pkl /
+road_embeddings.pkl / ward_embeddings.pkl from before this cleanup. They are
+harmless leftovers -- REQUIRED_FILES no longer lists them, and load() below
+no longer reads them, so they are simply ignored until the KB is retrained.
 """
 
 import os
@@ -32,11 +40,6 @@ REQUIRED_FILES = [
     "locality_statistics.csv",
     "locality_bbox.csv",
     "locality_polygons.geojson",
-    "address_embeddings.pkl",
-    "owner_embeddings.pkl",
-    "locality_embeddings.pkl",
-    "road_embeddings.pkl",
-    "ward_embeddings.pkl",
     "full_address_embeddings.pkl",
     "kd_tree.pkl",
     "ball_tree.pkl",
@@ -63,13 +66,17 @@ class KnowledgeBase:
     locality_stats_df: pd.DataFrame = None       # locality_statistics.csv
     locality_bbox_df: pd.DataFrame = None        # locality_bbox.csv
 
-    # Embeddings (np.ndarray, shape=(N, dim))
+    # Embeddings (np.ndarray, shape=(N, dim)). full_address_embeddings is
+    # the only one ever read (by GeoAIInferencer's FAISS search). The other
+    # 4 fields below are kept only so old code/pickles that still reference
+    # them by attribute name don't break -- training no longer populates
+    # them (see trainer.py._generate_embeddings).
+    full_address_embeddings: np.ndarray = None
     address_embeddings: np.ndarray = None
     owner_embeddings: np.ndarray = None
     locality_embeddings: np.ndarray = None
     road_embeddings: np.ndarray = None
     ward_embeddings: np.ndarray = None
-    full_address_embeddings: np.ndarray = None
 
     # Spatial indexes
     kd_tree: object = None                       # sklearn KDTree
@@ -160,8 +167,9 @@ def save(kb: KnowledgeBase, kb_path: str):
             os.path.join(kb_path, "locality_polygons.geojson"), driver="GeoJSON"
         )
 
-    # Embeddings
-    for name in ["address", "owner", "locality", "road", "ward", "full_address"]:
+    # Embeddings -- only full_address_embeddings is written; see the
+    # KnowledgeBase.full_address_embeddings comment above for why.
+    for name in ["full_address"]:
         emb = getattr(kb, f"{name}_embeddings")
         if emb is not None:
             with open(os.path.join(kb_path, f"{name}_embeddings.pkl"), "wb") as f:
@@ -214,8 +222,10 @@ def load(kb_path: str) -> KnowledgeBase:
     if os.path.exists(geojson_path):
         kb.locality_polygons_gdf = gpd.read_file(geojson_path)
 
-    # Embeddings
-    for name in ["address", "owner", "locality", "road", "ward", "full_address"]:
+    # Embeddings -- only full_address_embeddings is loaded. If an older KB
+    # directory still has the other 4 pickles on disk they are left unread
+    # (saves the memory/time of loading arrays nothing consumes).
+    for name in ["full_address"]:
         pkl_path = os.path.join(kb_path, f"{name}_embeddings.pkl")
         if os.path.exists(pkl_path):
             with open(pkl_path, "rb") as f:

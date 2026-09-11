@@ -338,6 +338,16 @@ def load_gis(
     # Sentinel values that should be treated as empty.
     _EMPTY_SENTINELS = {"NA", "None", "0", "nan", "N/A", ""}
 
+    # Dedup rule (technical-problems review, P6): real GIS shapefiles have
+    # been observed with duplicate UID values (e.g. 11 duplicate UIDs / 20
+    # extra rows in Barnala's gissurvey.shp). Without a stated rule, a
+    # duplicated UID silently produces multiple GIS records/polygons for
+    # what should be one property, inflating downstream counts. Rule:
+    # first occurrence wins; every later duplicate is dropped and counted.
+    uid_field = columns.get("uid")
+    seen_uids: set[str] = set()
+    duplicate_uids = 0
+
     polygons: list[Any] = []
     records: list[dict[str, str]] = []
     skipped = 0
@@ -366,12 +376,26 @@ def load_gis(
             val = str(raw).strip() if raw is not None else ""
             rec[fn] = "" if val in _EMPTY_SENTINELS else val
 
+        # --- Dedup: first occurrence of a UID wins ---
+        if uid_field:
+            uid_val = rec.get(uid_field, "")
+            if uid_val:
+                if uid_val in seen_uids:
+                    duplicate_uids += 1
+                    continue
+                seen_uids.add(uid_val)
+
         polygons.append(geom)
         records.append(rec)
 
     logger.info(
         "GIS loaded: %d polygons, %d skipped", len(polygons), skipped,
     )
+    if duplicate_uids:
+        logger.warning(
+            "GIS dedup: dropped %d duplicate-UID record(s) (first occurrence kept for each)",
+            duplicate_uids,
+        )
 
     # --- Spatial index ---
     spatial_index = STRtree(polygons)
