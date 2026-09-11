@@ -5,6 +5,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _write_change_detection_geojson(
+    joined_gdf: gpd.GeoDataFrame,
+    output_dir: str,
+    city_name: str,
+    gis_loc_col: str,
+) -> str:
+    """Emit {City}_Change_Detection.geojson: one feature per detected new-
+    construction polygon, in WGS84 (EPSG:4326) with [lon, lat] ordering per
+    RFC 7946 -- the same convention {City}_Defaulters.geojson uses -- so the
+    dashboard map can render both layers with the same pipeline.
+    """
+    cols_to_keep = [
+        c for c in ("Area_sqm", "Est_Bldgs", "GoogleBldg", "City", gis_loc_col, "dist_to_existing")
+        if c in joined_gdf.columns
+    ]
+    gdf = joined_gdf[cols_to_keep + ["geometry"]].copy()
+    if gis_loc_col in gdf.columns:
+        gdf = gdf.rename(columns={gis_loc_col: "gis_locality"})
+    if "City" not in gdf.columns:
+        gdf["City"] = city_name
+
+    try:
+        gdf = gdf.set_crs(joined_gdf.crs, allow_override=True).to_crs(epsg=4326)
+    except Exception as e:
+        logger.error(f"Could not reproject change-detection polygons to WGS84: {e}")
+
+    geojson_path = os.path.join(output_dir, f"{city_name}_Change_Detection.geojson")
+    if os.path.exists(geojson_path):
+        os.remove(geojson_path)  # to_file(driver=GeoJSON) refuses to overwrite
+    gdf.to_file(geojson_path, driver="GeoJSON")
+    logger.info(f"Change Detection GeoJSON saved: {geojson_path} ({len(gdf):,} features)")
+    return geojson_path
+
+
 def process_change_detection(
     change_shp_path: str,
     gis_gdf: gpd.GeoDataFrame,
@@ -37,7 +72,10 @@ def process_change_detection(
     logger.info("Spatial Joining new constructions to nearest GIS locality...")
     gis_localities = gis_gdf[[gis_loc_col, "geometry"]].dropna(subset=[gis_loc_col])
     joined = gpd.sjoin_nearest(change_gdf, gis_localities, how="left", distance_col="dist_to_existing")
-    
+
+    # Dashboard map layer: one feature per new-construction polygon (WGS84).
+    _write_change_detection_geojson(joined, output_dir, city_name, gis_loc_col)
+
     # Aggregate
     locality_new_bldgs = joined.groupby(gis_loc_col)["Est_Bldgs"].sum().reset_index()
     locality_new_bldgs.rename(columns={"Est_Bldgs": "Estimated_New_Buildings"}, inplace=True)

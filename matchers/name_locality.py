@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Dict, Set
 
 import pandas as pd
@@ -121,6 +121,10 @@ def match_name_locality(
     name_strong_single = 0
     name_crosswalk = 0
     name_rejected = 0
+    # Ticket 1.25: an mSeva locality with NO matching GIS locality (exact or
+    # crosswalk) must never be silently dropped -- tracked here and reported
+    # loudly below instead of disappearing into the generic rejected count.
+    unknown_locality_counts: Counter = Counter()
 
     mseva_owner_col = mcols.get("owner", "ownername")
     mseva_guardian_col = mcols.get("guardian", "guardianname")
@@ -179,6 +183,8 @@ def match_name_locality(
             cands.extend(loc_idx.get(tl, []))
 
         if not cands:
+            if ml:
+                unknown_locality_counts[ml] += 1
             continue
 
         # Cap candidates to avoid infinite loops on huge localities
@@ -280,5 +286,15 @@ def match_name_locality(
         "Name+Locality matches found: confirmed=%d, single=%d, crosswalk=%d, rejected=%d",
         name_confirmed, name_strong_single, name_crosswalk, name_rejected
     )
+
+    if unknown_locality_counts:
+        total_affected = sum(unknown_locality_counts.values())
+        top = ", ".join(f"{loc!r} ({n})" for loc, n in unknown_locality_counts.most_common(10))
+        logger.warning(
+            "Name+Locality: %d unmatched mSeva record(s) reference %d locality name(s) with "
+            "NO matching GIS locality (exact match or crosswalk). These are flagged here "
+            "rather than silently dropped -- top unmapped localities: %s",
+            total_affected, len(unknown_locality_counts), top,
+        )
 
     return results

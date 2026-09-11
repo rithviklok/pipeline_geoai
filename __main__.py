@@ -14,7 +14,6 @@ import logging
 import sys
 
 from .config import CityConfig
-from .orchestrator import PropertyTaxPipeline
 from .quality_check import QualityAssessor
 
 # Set up logging to stdout
@@ -53,6 +52,11 @@ def main():
         choices=["load", "quality_check", "train", "infer", "match", "defaulters", "report"],
         help="Optional specific pipeline steps to run (default: run all standard steps)",
     )
+    parser.add_argument(
+        "--month", type=str, default=None,
+        help="Month this refresh represents, format YYYY-MM (default: current month). "
+             "Recorded in the run's provenance manifest; does not filter input data.",
+    )
 
     args = parser.parse_args()
 
@@ -90,52 +94,23 @@ def main():
         print(f"\nSaved report to {output_path}")
         return
 
-    # Run the pipeline
-    pipeline = PropertyTaxPipeline(config)
-    pipeline.run(steps=args.steps)
-    
-    # Run Change Detection if shapefile provided
-    if args.change_detection:
-        import os
-        import pandas as pd
-        import geopandas as gpd
-        from .change_detection import process_change_detection
-        
-        gis_gdf = gpd.read_file(args.gis)
-        register_path = os.path.join(args.output, f"{args.city}_Match_Register.csv")
-        
-        if os.path.exists(register_path):
-            match_register = pd.read_csv(register_path)
-            process_change_detection(
-                change_shp_path=args.change_detection,
-                gis_gdf=gis_gdf,
-                match_register=match_register,
-                gis_loc_col=(config.gis_columns or {}).get("locality", "Locality"),
-                output_dir=args.output,
-                city_name=args.city
-            )
-        else:
-            print(f"Error: Could not find Match Register at {register_path} to perform bucket math.")
-            
-    # Standardize output CSVs for Production Database
-    from .standardize import standardize_csv
-    import os
-    
-    csv_files = [
-        f"{args.city}_Match_Register.csv",
-        f"{args.city}_Defaulters.csv",
-        f"{args.city}_GeoAI_Geocoded.csv",
-    ]
-    if args.change_detection:
-        csv_files.append(f"{args.city}_Change_Detection_Summary.csv")
-        
-    print("\n" + "="*70)
-    print("STEP 5: STANDARDIZING FOR DATABASE INGESTION")
-    print("="*70)
-    for csv_file in csv_files:
-        filepath = os.path.join(args.output, csv_file)
-        if os.path.exists(filepath):
-            standardize_csv(filepath, args.city, args.state)
+    # Run the pipeline via run_manager: this adds a per-city lock, an
+    # isolated/atomic publish (no half-finished data ever lands in
+    # --output), a provenance manifest, field-list conformance validation,
+    # and failure/anomaly alerting on top of the pipeline steps, change
+    # detection, and CSV standardization that used to be driven inline here.
+    from .run_manager import RefreshFailedError, execute_pipeline_run
+
+    try:
+        execute_pipeline_run(
+            config=config,
+            steps=args.steps,
+            change_detection_path=args.change_detection,
+            month=args.month,
+        )
+    except RefreshFailedError as e:
+        print(f"\n[REFRESH FAILED] {e}\n", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
