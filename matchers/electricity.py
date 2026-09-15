@@ -29,6 +29,7 @@ def confirm_defaulters(
     matched_uids: Set[str],
     elec_columns: dict = None,
     gis_columns: dict = None,
+    tree_idx_map: list = None,
 ) -> Dict[str, dict]:
     """Identify occupied properties (active electricity meters) that have no mSeva tax record.
 
@@ -93,7 +94,8 @@ def confirm_defaulters(
             continue
 
         pt = Point(e, n)
-        cands = tree.query(pt)
+        raw_cands = tree.query(pt)
+        cands = [tree_idx_map[ci] for ci in raw_cands] if tree_idx_map else list(raw_cands)
         containing = [
             ci for ci in cands
             if polygons[ci].contains(pt) or polygons[ci].touches(pt)
@@ -136,6 +138,7 @@ def match_electricity_taxpayers(
     electricity_df: pd.DataFrame,
     config: CityConfig,
     existing_matches: dict,
+    tree_idx_map: list = None,
 ) -> Dict[str, MatchResult]:
     """Layer 5: Electricity-based taxpayer matching.
 
@@ -279,7 +282,8 @@ def match_electricity_taxpayers(
                 continue
 
             pt = Point(e, n)
-            cands_pip = tree.query(pt)
+            raw_cands = tree.query(pt)
+            cands_pip = [tree_idx_map[ci] for ci in raw_cands] if tree_idx_map else list(raw_cands)
             containing = [
                 ci for ci in cands_pip
                 if polygons[ci].contains(pt) or polygons[ci].touches(pt)
@@ -297,7 +301,9 @@ def match_electricity_taxpayers(
                 )
             else:
                 buf = pt.buffer(30)
-                cands_buf = [ci for ci in tree.query(buf) if polygons[ci].intersects(buf)]
+                raw_buf = tree.query(buf)
+                cands_buf = [tree_idx_map[ci] for ci in raw_buf] if tree_idx_map else list(raw_buf)
+                cands_buf = [ci for ci in cands_buf if polygons[ci].intersects(buf)]
                 if cands_buf:
                     best_ci = max(cands_buf, key=lambda ci: polygons[ci].intersection(buf).area)
                     ga = gis_records[best_ci]

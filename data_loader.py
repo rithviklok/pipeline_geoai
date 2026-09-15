@@ -348,26 +348,23 @@ def load_gis(
     seen_uids: set[str] = set()
     duplicate_uids = 0
 
-    polygons: list[Any] = []
+    polygons: list[Any] = []      # None for records with no drawable geometry
     records: list[dict[str, str]] = []
-    skipped = 0
+    no_geom_count = 0
 
     for sr in sf_reader.iterShapeRecords():
         # --- Geometry ---
+        geom = None
         try:
-            geom = shape(sr.shape.__geo_interface__)
+            raw_geom = shape(sr.shape.__geo_interface__)
+            if not raw_geom.is_empty:
+                geom = raw_geom
+            elif not raw_geom.is_valid:
+                fixed = raw_geom.buffer(0)
+                if not fixed.is_empty:
+                    geom = fixed
         except Exception:
-            skipped += 1
-            continue
-
-        if geom.is_empty:
-            skipped += 1
-            continue
-        if not geom.is_valid:
-            geom = geom.buffer(0)
-            if geom.is_empty:
-                skipped += 1
-                continue
+            pass  # geom stays None
 
         # --- Attributes (keep original shapefile field keys) ---
         rec: dict[str, str] = {}
@@ -385,11 +382,16 @@ def load_gis(
                     continue
                 seen_uids.add(uid_val)
 
+        if geom is None:
+            no_geom_count += 1
+
         polygons.append(geom)
         records.append(rec)
 
+    valid_count = sum(1 for g in polygons if g is not None)
     logger.info(
-        "GIS loaded: %d polygons, %d skipped", len(polygons), skipped,
+        "GIS loaded: %d total records (%d with geometry, %d without geometry)",
+        len(records), valid_count, no_geom_count,
     )
     if duplicate_uids:
         logger.warning(
@@ -397,10 +399,19 @@ def load_gis(
             duplicate_uids,
         )
 
-    # --- Spatial index ---
-    spatial_index = STRtree(polygons)
+    # --- Spatial index (built from valid geometries only) ---
+    # STRtree requires real geometries.  We feed it only the non-None
+    # entries and keep a mapping from the tree's internal indices back to
+    # the positions in the full polygons/records lists.
+    valid_polys = []
+    tree_idx_to_original: list[int] = []
+    for i, g in enumerate(polygons):
+        if g is not None:
+            valid_polys.append(g)
+            tree_idx_to_original.append(i)
+    spatial_index = STRtree(valid_polys)
 
-    return polygons, records, spatial_index, columns
+    return polygons, records, spatial_index, tree_idx_to_original, columns
 
 
 def load_electricity(

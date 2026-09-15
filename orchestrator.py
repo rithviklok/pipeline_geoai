@@ -7,6 +7,7 @@ individual steps on demand.
 import os
 import time
 import json
+import logging
 import pandas as pd
 from typing import Optional, List
 from dataclasses import asdict
@@ -18,6 +19,8 @@ from .matchers.mobile import match_mobile
 from .matchers.name_locality import match_name_locality
 from .matchers.electricity import confirm_defaulters, match_electricity_taxpayers
 from .reporting.summary import build_match_register, compute_summary, print_summary
+
+logger = logging.getLogger(__name__)
 
 
 class PropertyTaxPipeline:
@@ -43,6 +46,7 @@ class PropertyTaxPipeline:
         self._gis_records = None
         self._polygons = None
         self._tree = None
+        self._tree_idx_map = None
         self._gis_columns = None
         self._electricity_df = None
         self._elec_columns = None
@@ -132,12 +136,13 @@ class PropertyTaxPipeline:
         # Load GIS (optional — skipped for parse/geocode-only runs)
         if self.config.gis_path and os.path.exists(self.config.gis_path):
             print(f"\n  Loading GIS: {self.config.gis_path}")
-            self._polygons, self._gis_records, self._tree, self._gis_columns = load_gis(
+            self._polygons, self._gis_records, self._tree, self._tree_idx_map, self._gis_columns = load_gis(
                 self.config.gis_path,
                 self.config.gis_columns
             )
             self.config.gis_columns = self._gis_columns
-            print(f"  → {len(self._polygons):,} polygons loaded")
+            geo_count = sum(1 for g in self._polygons if g is not None)
+            print(f"  → {len(self._gis_records):,} records loaded ({geo_count:,} with geometry)")
             print(f"  → Columns detected: {self._gis_columns}")
 
             # Auto-detect UTM zone from GIS shapefile projection if not set
@@ -166,7 +171,7 @@ class PropertyTaxPipeline:
 
                 # Strategy 2: Fall back to coordinate analysis
                 if detected_zone is None:
-                    sample_polys = self._polygons[:min(100, len(self._polygons))]
+                    sample_polys = [p for p in self._polygons[:min(200, len(self._polygons))] if p is not None][:100]
                     sample_bounds = [p.bounds for p in sample_polys]
                     avg_x = sum(b[0] + b[2] for b in sample_bounds) / (2 * len(sample_bounds))
                     if avg_x > 100000:
@@ -303,7 +308,8 @@ class PropertyTaxPipeline:
             print("\n  ── Layer 3: Electricity Coordinates ──")
             elec_matches = match_electricity_taxpayers(
                 self._mseva_df, self._gis_records, self._polygons,
-                self._tree, self._electricity_df, self.config, self._match_results
+                self._tree, self._electricity_df, self.config, self._match_results,
+                tree_idx_map=self._tree_idx_map,
             )
             self._match_results.update(elec_matches)
             print(f"  → {len(elec_matches):,} electricity matches")
@@ -442,7 +448,8 @@ class PropertyTaxPipeline:
             confirmed = confirm_defaulters(
                 self._electricity_df, self._gis_records,
                 self._polygons, self._tree, self.config,
-                matched_uids, self._elec_columns, self._gis_columns
+                matched_uids, self._elec_columns, self._gis_columns,
+                tree_idx_map=self._tree_idx_map,
             )
             # Only count confirmations that are in the taxable set
             if exempted_col:
@@ -451,51 +458,84 @@ class PropertyTaxPipeline:
         else:
             print("  No electricity data — all defaulters remain 'potential'.")
 
-        # Persist the defaulter list to disk — ONLY taxable unmatched polygons.
+        # Persist the unified GIS-parcel register to disk — EVERY parcel
+        # loaded (matched, suspected/potential, confirmed-occupied, and
+        # exempt), per the Data Dictionary's tax_status/geo_status contract.
         gcols = self._gis_columns or {}
         g_owner = gcols.get("owner", "Owner_Name")
         g_guardian = gcols.get("guardian", "Father_Hus")
         g_mobile = gcols.get("mobile", "Mobile_No")
         g_locality = gcols.get("locality", "Locality")
 
-        # Build UID → polygon-index lookup for centroid computation
-        from .helpers import utm_to_wgs84
-        uid_to_idx = {}
-        for i, r in enumerate(self._gis_records):
-            uid = r.get(uid_col, r.get('UID', ''))
-            if uid:
-                uid_to_idx[uid] = i
+        ward_col = gcols.get("ward")
+        if not ward_col:
+            logger.warning(
+                "No ward column detected for GIS data (city=%s) — 'ward_id' "
+                "will be left empty for every row in this run.",
+                self.config.name,
+            )
 
-        defaulter_rows = []
+        from .helpers import utm_to_wgs84
+
+        # Fix 2 contract columns: relabel the existing matched / taxable-
+        # unmatched (POTENTIAL/CONFIRMED_OCCUPIED) / exempted-unmatched
+        # outcome into the 3-way tax_status enum — the matching itself is
+        # not re-derived, only relabeled per-parcel.
+        parcel_meta = []
         for r in self._gis_records:
             uid = r.get(uid_col, r.get('UID', ''))
-            if not uid or uid not in taxable_unmatched:
-                continue
-            conf = confirmed.get(uid, {})
+            conf = confirmed.get(uid, {}) if uid else {}
+            if uid and uid in matched_uids:
+                tax_status, status = "IN_TAX_NET", "MATCHED"
+            elif uid in exempted_unmatched:
+                tax_status, status = "EXEMPT", "EXEMPT"
+            else:
+                tax_status = "SUSPECTED"
+                status = "CONFIRMED_OCCUPIED" if conf else "POTENTIAL"
+            parcel_meta.append({
+                "tax_status": tax_status,
+                "status": status,
+                "property_uid": f"GIS:{uid}",
+                "ward_id": r.get(ward_col, "") if ward_col else "",
+            })
 
-            # Compute polygon centroid → WGS84 lat/lon
+        defaulter_rows = []
+        for i, r in enumerate(self._gis_records):
+            uid = r.get(uid_col, r.get('UID', ''))
+            meta = parcel_meta[i]
+            conf = confirmed.get(uid, {}) if uid else {}
+
+            # Compute polygon centroid → WGS84 lat/lon. `i` indexes directly
+            # into self._polygons since both lists are built in parallel by
+            # data_loader.load_gis (one entry per successfully-loaded parcel).
             centroid_lat, centroid_lon = "", ""
-            poly_idx = uid_to_idx.get(uid)
-            if poly_idx is not None and poly_idx < len(self._polygons):
+            has_polygon = False
+            if i < len(self._polygons):
                 try:
-                    c = self._polygons[poly_idx].centroid
+                    c = self._polygons[i].centroid
                     clat, clon = utm_to_wgs84(c.x, c.y, self.config.utm_zone)
                     centroid_lat = round(clat, 6)
                     centroid_lon = round(clon, 6)
+                    has_polygon = True
                 except Exception:
                     pass
+            geo_status = "SHAPE" if has_polygon else ("DOT" if centroid_lat != "" else "NONE")
 
             row_data = {
                 "gis_uid": uid,
+                "property_uid": meta["property_uid"],
                 "gis_owner_name": r.get(g_owner, ""),
                 "gis_guardian_name": r.get(g_guardian, ""),
                 "gis_mobile": r.get(g_mobile, ""),
                 "gis_locality": r.get(g_locality, ""),
+                "ward_id": meta["ward_id"],
                 "latitude": centroid_lat,
                 "longitude": centroid_lon,
                 "property_usage": r.get(prop_usage_col, "") if prop_usage_col else "",
                 "property_type": r.get(prop_type_col, "") if prop_type_col else "",
-                "status": "CONFIRMED_OCCUPIED" if uid in confirmed else "POTENTIAL",
+                "status": meta["status"],
+                "tax_status": meta["tax_status"],
+                "geo_status": geo_status,
                 "electricity_account_no": conf.get("account_no", ""),
                 "electricity_holder_name": conf.get("holder_name", ""),
             }
@@ -506,22 +546,25 @@ class PropertyTaxPipeline:
             self.config.output_dir, f"{self.config.name}_Defaulters.csv"
         )
         defaulter_df.to_csv(defaulters_path, index=False)
-        print(f"  Defaulter list saved: {defaulters_path} ({len(defaulter_df):,} taxable defaulters)")
+        status_counts = defaulter_df["tax_status"].value_counts().to_dict() if len(defaulter_df) else {}
+        print(
+            f"  GIS parcel register saved: {defaulters_path} "
+            f"({len(defaulter_df):,} total parcels — {status_counts})"
+        )
 
-        # ── GeoJSON output with full polygon geometry ──
+        # ── GeoJSON output with full polygon geometry (every parcel) ──
         geojson_features = []
-        for r in self._gis_records:
+        for i, r in enumerate(self._gis_records):
             uid = r.get(uid_col, r.get('UID', ''))
-            if not uid or uid not in taxable_unmatched:
-                continue
-            conf = confirmed.get(uid, {})
-            poly_idx = uid_to_idx.get(uid)
+            meta = parcel_meta[i]
+            conf = confirmed.get(uid, {}) if uid else {}
 
             # Convert polygon coordinates from UTM → WGS84
             geometry = None
-            if poly_idx is not None and poly_idx < len(self._polygons):
+            has_polygon = False
+            if i < len(self._polygons):
                 try:
-                    poly = self._polygons[poly_idx]
+                    poly = self._polygons[i]
                     # Convert exterior ring
                     exterior_coords = []
                     for x, y in poly.exterior.coords:
@@ -539,18 +582,25 @@ class PropertyTaxPipeline:
                     
                     coordinates = [exterior_coords] + interior_rings
                     geometry = {"type": "Polygon", "coordinates": coordinates}
+                    has_polygon = True
                 except Exception:
                     pass  # geometry stays None — valid GeoJSON
 
+            geo_status = "SHAPE" if has_polygon else "NONE"
+
             properties = {
                 "gis_uid": str(uid),
+                "property_uid": meta["property_uid"],
                 "gis_owner_name": str(r.get(g_owner, "")),
                 "gis_guardian_name": str(r.get(g_guardian, "")),
                 "gis_mobile": str(r.get(g_mobile, "")),
                 "gis_locality": str(r.get(g_locality, "")),
+                "ward_id": str(meta["ward_id"]),
                 "property_usage": str(r.get(prop_usage_col, "")) if prop_usage_col else "",
                 "property_type": str(r.get(prop_type_col, "")) if prop_type_col else "",
-                "status": "CONFIRMED_OCCUPIED" if uid in confirmed else "POTENTIAL",
+                "status": meta["status"],
+                "tax_status": meta["tax_status"],
+                "geo_status": geo_status,
                 "electricity_account_no": str(conf.get("account_no", "")),
                 "electricity_holder_name": str(conf.get("holder_name", "")),
             }
@@ -570,7 +620,7 @@ class PropertyTaxPipeline:
         )
         with open(geojson_path, "w", encoding="utf-8") as f:
             json.dump(geojson, f, ensure_ascii=False)
-        print(f"  GeoJSON saved: {geojson_path} ({len(geojson_features):,} features)")
+        print(f"  GeoJSON saved: {geojson_path} ({len(geojson_features):,} features, every GIS parcel)")
 
         self._defaulter_list_df = defaulter_df
         self._defaulters_path = defaulters_path
@@ -586,7 +636,11 @@ class PropertyTaxPipeline:
             self._mseva_df, self._match_results,
             self.config, self._mseva_columns
         )
-        
+
+        # Fix 2 contract column: stable join key so this file can be joined
+        # against other months' outputs.
+        register["property_uid"] = register["propertyid"].astype(str).map(lambda pid: f"PT:{pid}")
+
         register_path = os.path.join(
             self.config.output_dir, 
             f"{self.config.name}_Match_Register.csv"

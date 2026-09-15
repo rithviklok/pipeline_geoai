@@ -124,7 +124,7 @@ def _run_locked(
             if fname.endswith(".csv"):
                 fpath = os.path.join(tmp_dir, fname)
                 if os.path.exists(fpath):
-                    standardize_csv(fpath, city, config.state)
+                    standardize_csv(fpath, city, config.state, month)
 
         results = validate_output.validate_city_outputs(tmp_dir, city)
         logger.info("\n%s", validate_output.format_report(results))
@@ -187,19 +187,28 @@ def _publish(
     tmp_dir: str,
     final_output_dir: str,
 ) -> Dict[str, Any]:
-    """Copy a successful run's outputs into the real output directory
+    """Copy a successful run's outputs into a per-run directory nested under
+    the real output directory (``{final_output_dir}/{city}/{month}/{run_id}/``)
     atomically (per-file copy2, all-or-nothing at the manifest level — a
     failure here still leaves the tmp_dir intact for retry/debugging), then
-    record provenance and check for anomalies vs. the last published run."""
+    record provenance and check for anomalies vs. the last published run.
+
+    The provenance manifest history (``.manifests/{city}/``) and the
+    ``{city}_latest_manifest.json`` pointer are deliberately kept at the flat
+    `final_output_dir` root (per RUNBOOK.md) — only the data outputs
+    themselves move into the nested, per-run path.
+    """
+    published_dir = os.path.join(final_output_dir, city, month, run_id)
+    os.makedirs(published_dir, exist_ok=True)
     for fname in _output_filenames(city):
         src = os.path.join(tmp_dir, fname)
         if os.path.exists(src):
-            shutil.copy2(src, os.path.join(final_output_dir, fname))
+            shutil.copy2(src, os.path.join(published_dir, fname))
 
     finished_at = time.time()
 
     current_summary = None
-    summary_path = os.path.join(final_output_dir, f"{city}_summary.json")
+    summary_path = os.path.join(published_dir, f"{city}_summary.json")
     if os.path.exists(summary_path):
         try:
             with open(summary_path, "r", encoding="utf-8") as f:
@@ -213,6 +222,7 @@ def _publish(
         config=config, run_id=run_id, month=month, steps=steps,
         started_at=started_at, finished_at=finished_at, status="success",
         output_filenames=_output_filenames(city),
+        published_dir=published_dir,
         extra={"summary": current_summary} if current_summary else None,
     )
     manifest_path = manifest_mod.save_manifest(final_output_dir, city, m)
@@ -230,7 +240,7 @@ def _publish(
             logger.warning("Anomaly check skipped: %s", e)
 
     logger.info(
-        "Refresh for '%s' (%s) published successfully. run_id=%s, elapsed=%.1fs",
-        city, month, run_id, finished_at - started_at,
+        "Refresh for '%s' (%s) published successfully to %s. run_id=%s, elapsed=%.1fs",
+        city, month, published_dir, run_id, finished_at - started_at,
     )
     return m

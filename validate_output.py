@@ -24,23 +24,36 @@ import pandas as pd
 
 # Data Dictionary §3.2 — Match Register CSV (columns beyond the pass-through
 # original mSeva fields).
+#
+# `property_uid` and `month` are the cross-month join-key contract columns
+# (property_uid added in orchestrator._step_report; month is stamped by
+# standardize.standardize_csv during publish).
 MATCH_REGISTER_REQUIRED_COLUMNS = [
     "propertyid", "matched_uid", "match_method",
     "gis_owner_name", "gis_mobile", "gis_locality",
+    "property_uid", "month",
 ]
 
-# Data Dictionary §3.3 — Defaulters CSV.
+# Data Dictionary §3.3 — Defaulters CSV (now the unified GIS-parcel register:
+# every loaded parcel, not just taxable-unmatched ones).
+#
+# `property_uid`/`tax_status`/`geo_status`/`ward_id` are added in
+# orchestrator._step_defaulters; `month` is stamped by standardize_csv.
 DEFAULTERS_CSV_REQUIRED_COLUMNS = [
     "gis_uid", "gis_owner_name", "gis_guardian_name", "gis_mobile", "gis_locality",
     "latitude", "longitude", "property_usage", "property_type", "status",
     "electricity_account_no", "electricity_holder_name",
+    "property_uid", "tax_status", "geo_status", "ward_id", "month",
 ]
 
-# Data Dictionary §3.4 — Defaulters GeoJSON feature properties.
+# Data Dictionary §3.4 — Defaulters GeoJSON feature properties (unified
+# GIS-parcel register). No `month` here: GeoJSON files are not run through
+# standardize_csv (CSV-only), so month is a CSV-only contract column.
 DEFAULTERS_GEOJSON_REQUIRED_PROPERTIES = [
     "gis_uid", "gis_owner_name", "gis_guardian_name", "gis_mobile", "gis_locality",
     "property_usage", "property_type", "status",
     "electricity_account_no", "electricity_holder_name",
+    "property_uid", "tax_status", "geo_status", "ward_id",
 ]
 
 # Data Dictionary §3.5 — Summary JSON.

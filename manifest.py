@@ -84,7 +84,20 @@ def build_input_manifest(config) -> Dict[str, Any]:
     return inputs
 
 
-def build_output_manifest(output_dir: str, filenames: List[str]) -> Dict[str, Any]:
+def build_output_manifest(
+    output_dir: str,
+    filenames: List[str],
+    rel_base: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Hash + stat every output file found in `output_dir`.
+
+    Each entry also records a `path` relative to `rel_base` (the flat,
+    top-level output directory) so downstream consumers such as the API can
+    resolve a published file's location even though it now lives under a
+    nested {city}/{month}/{run_id}/ directory rather than directly in
+    `rel_base`. When `rel_base` is omitted, `path` falls back to the bare
+    filename (matching the historical flat layout).
+    """
     outputs: Dict[str, Any] = {}
     for name in filenames:
         path = os.path.join(output_dir, name)
@@ -92,6 +105,7 @@ def build_output_manifest(output_dir: str, filenames: List[str]) -> Dict[str, An
             outputs[name] = {
                 "sha256": compute_file_hash(path),
                 "size_bytes": os.path.getsize(path),
+                "path": os.path.relpath(path, rel_base) if rel_base else name,
             }
     return outputs
 
@@ -105,6 +119,7 @@ def build_manifest(
     finished_at: float,
     status: str,
     output_filenames: List[str],
+    published_dir: Optional[str] = None,
     error: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -113,6 +128,12 @@ def build_manifest(
     `status` is one of "success" | "failed". Output hashes are only computed
     for successful runs (a failed run's temp files are not the published
     truth and are left in place purely for debugging).
+
+    `published_dir` is the actual directory the outputs were copied into
+    (results/{city}/{month}/{run_id}/ — see run_manager._publish()). Output
+    hashes are read from there, but each entry's `path` is recorded relative
+    to `config.output_dir` (the flat, top-level directory), so the manifest
+    stays a stable pointer regardless of the nested publish layout.
     """
     manifest = {
         "run_id": run_id,
@@ -128,7 +149,10 @@ def build_manifest(
         "git_commit": _git_commit(),
         "config_snapshot": dataclasses.asdict(config),
         "inputs": build_input_manifest(config),
-        "outputs": build_output_manifest(config.output_dir, output_filenames) if status == "success" else {},
+        "outputs": (
+            build_output_manifest(published_dir, output_filenames, rel_base=config.output_dir)
+            if status == "success" and published_dir else {}
+        ),
         "error": error,
     }
     if extra:

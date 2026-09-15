@@ -50,9 +50,23 @@ def _latest_or_404(city: str) -> Dict[str, Any]:
     return latest
 
 
+def _output_path(city: str, filename: str) -> str:
+    """Resolve a published output file's path through the
+    {city}_latest_manifest.json pointer's stored `outputs[filename].path`
+    (relative to OUTPUT_DIR) rather than assuming a flat layout — outputs
+    now live under OUTPUT_DIR/{city}/{month}/{run_id}/."""
+    latest = _latest_or_404(city)
+    entry = latest.get("outputs", {}).get(filename)
+    if not entry or "path" not in entry:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{filename}' is not part of the latest published outputs for '{city}'.",
+        )
+    return os.path.join(OUTPUT_DIR, entry["path"])
+
+
 def _read_json_output(city: str, filename_template: str) -> Any:
-    _latest_or_404(city)  # ensures a run has actually been published
-    path = os.path.join(OUTPUT_DIR, filename_template.format(city=city))
+    path = _output_path(city, filename_template.format(city=city))
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"{path} not found.")
     with open(path, "r", encoding="utf-8") as f:
@@ -93,8 +107,7 @@ def match_register(city: str, limit: int = 500, offset: int = 0) -> Dict[str, An
     """Paginated Match Register rows (CSV converted to JSON on the fly)."""
     import pandas as pd
 
-    _latest_or_404(city)
-    path = os.path.join(OUTPUT_DIR, f"{city}_Match_Register.csv")
+    path = _output_path(city, f"{city}_Match_Register.csv")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"{path} not found.")
     df = pd.read_csv(path)
