@@ -9,9 +9,10 @@ import time
 import json
 import logging
 import pandas as pd
-from typing import Optional, List
+from typing import Callable, Optional, List
 from dataclasses import asdict
 
+from .contracts import SCHEMA_VERSION
 from .config import CityConfig, PipelineResult
 from .data_loader import load_mseva, load_gis, load_electricity, detect_columns
 from .helpers import normalize_mobile
@@ -21,6 +22,13 @@ from .matchers.electricity import confirm_defaulters, match_electricity_taxpayer
 from .reporting.summary import build_match_register, compute_summary, print_summary
 
 logger = logging.getLogger(__name__)
+
+_NON_EXEMPT_VALUES = {"", "na", "n/a", "none", "null", "0", "no", "n", "false"}
+
+
+def _is_exempt_value(value) -> bool:
+    """Interpret a populated exemption-category field as an exemption."""
+    return str(value).strip().casefold() not in _NON_EXEMPT_VALUES
 
 
 class PropertyTaxPipeline:
@@ -39,8 +47,13 @@ class PropertyTaxPipeline:
         'load', 'quality_check', 'train', 'infer', 'match', 'defaulters', 'report'
     ]
 
-    def __init__(self, config: CityConfig):
+    def __init__(
+        self,
+        config: CityConfig,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ):
         self.config = config
+        self._progress_callback = progress_callback
         self._mseva_df = None
         self._mseva_columns = None
         self._gis_records = None
@@ -57,6 +70,18 @@ class PropertyTaxPipeline:
         # GeoAI training/inference state
         self._kb = None              # Trained Knowledge Base
         self._geocoded_df = None     # Geocoded output from inference
+
+    def _run_named_step(self, name: str, function):
+        if self._progress_callback:
+            self._progress_callback(name, "started")
+        result = function()
+        if self._progress_callback:
+            self._progress_callback(name, "completed")
+        return result
+
+    def load_geocoded_checkpoint(self, path: str) -> None:
+        """Restore the exact inference DataFrame used by the normal run path."""
+        self._geocoded_df = pd.read_csv(path, low_memory=False)
 
     def run(self, steps: Optional[List[str]] = None) -> PipelineResult:
         """
@@ -85,19 +110,19 @@ class PropertyTaxPipeline:
         self._log_header()
 
         if 'load' in steps:
-            self._step_load()
+            self._run_named_step("load", self._step_load)
 
         if 'train' in steps:
-            self._step_train()
+            self._run_named_step("train", self._step_train)
 
         if 'infer' in steps:
-            self._step_infer()
+            self._run_named_step("infer", self._step_infer)
 
         if 'match' in steps:
-            self._step_match()
+            self._run_named_step("match", self._step_match)
 
         if 'defaulters' in steps:
-            self._step_defaulters()
+            self._run_named_step("defaulters", self._step_defaulters)
 
         result = PipelineResult(
             city=self.config.name,
@@ -110,7 +135,7 @@ class PropertyTaxPipeline:
         result.defaulter_list = self._defaulter_list_df
 
         if 'report' in steps and self._mseva_df is not None:
-            result = self._step_report(result)
+            result = self._run_named_step("report", lambda: self._step_report(result))
 
         self._log_footer(result)
         return result
@@ -246,8 +271,24 @@ class PropertyTaxPipeline:
 
         from .geoai.inferencer import GeoAIInferencer, InferenceConfig
 
-        inferencer = GeoAIInferencer(self._kb, InferenceConfig())
+        inf_cfg = InferenceConfig(
+            mseva_owner_col=self._mseva_columns.get("owner", "ownername"),
+            mseva_guardian_col=self._mseva_columns.get("guardian", "guardianname"),
+            mseva_locality_col=self._mseva_columns.get("locality", "localityname"),
+            mseva_address_col=self._mseva_columns.get("address", "address"),
+            mseva_property_id_col=self._mseva_columns.get("property_id", "propertyid"),
+            mseva_old_property_id_col=self._mseva_columns.get("old_property_id", "oldpropertyid"),
+            mseva_survey_id_col=self._mseva_columns.get("survey_id", "surveyid")
+        )
+        inferencer = GeoAIInferencer(self._kb, inf_cfg)
         self._geocoded_df = inferencer.infer(self._mseva_df)
+        self._geocoded_df["City"] = self.config.name
+        self._geocoded_df["State"] = self.config.state
+        self._geocoded_df["month"] = self.config.data_month or ""
+        self._geocoded_df["run_id"] = self.config.run_id or ""
+        self._geocoded_df["schema_version"] = (
+            self.config.schema_version or SCHEMA_VERSION
+        )
 
         # Save intermediate output for debugging
         out_path = os.path.join(
@@ -339,12 +380,13 @@ class PropertyTaxPipeline:
         from .config import MatchResult
         matches = {}
 
+        pid_col = self._mseva_columns.get("property_id", "propertyid")
         for _, row in geocoded_df.iterrows():
             match_type = str(row.get("Match_Type", ""))
             if match_type == "UNMATCHED" or not match_type:
                 continue
 
-            pid = str(row.get("propertyid", row.get("property_id", "")))
+            pid = str(row.get(pid_col, ""))
             if not pid or pid in matches:
                 continue
 
@@ -424,10 +466,15 @@ class PropertyTaxPipeline:
         # Separate unmatched into taxable vs exempted
         taxable_unmatched = set()
         exempted_unmatched = set()
+        exempted_uids = set()
+        if exempted_col:
+            exempted_uids = {
+                uid
+                for uid, rec in uid_to_record.items()
+                if _is_exempt_value(rec.get(exempted_col, ""))
+            }
         for uid in unmatched_uids:
-            rec = uid_to_record.get(uid, {})
-            exempt_val = rec.get(exempted_col, "").strip().lower() if exempted_col else ""
-            if exempt_val == "exempted":
+            if uid in exempted_uids:
                 exempted_unmatched.add(uid)
             else:
                 taxable_unmatched.add(uid)
@@ -485,10 +532,10 @@ class PropertyTaxPipeline:
         for r in self._gis_records:
             uid = r.get(uid_col, r.get('UID', ''))
             conf = confirmed.get(uid, {}) if uid else {}
-            if uid and uid in matched_uids:
-                tax_status, status = "IN_TAX_NET", "MATCHED"
-            elif uid in exempted_unmatched:
+            if uid in exempted_uids:
                 tax_status, status = "EXEMPT", "EXEMPT"
+            elif uid and uid in matched_uids:
+                tax_status, status = "IN_TAX_NET", "MATCHED"
             else:
                 tax_status = "SUSPECTED"
                 status = "CONFIRMED_OCCUPIED" if conf else "POTENTIAL"
@@ -536,6 +583,9 @@ class PropertyTaxPipeline:
                 "status": meta["status"],
                 "tax_status": meta["tax_status"],
                 "geo_status": geo_status,
+                "month": self.config.data_month or "",
+                "run_id": self.config.run_id or "",
+                "schema_version": self.config.schema_version or SCHEMA_VERSION,
                 "electricity_account_no": conf.get("account_no", ""),
                 "electricity_holder_name": conf.get("holder_name", ""),
             }
@@ -553,6 +603,15 @@ class PropertyTaxPipeline:
         )
 
         # ── GeoJSON output with full polygon geometry (every parcel) ──
+        from pyproj import Transformer
+        from shapely.geometry import mapping
+        from shapely.ops import transform
+
+        transformer = Transformer.from_crs(
+            f"EPSG:326{self.config.utm_zone:02d}",
+            "EPSG:4326",
+            always_xy=True,
+        )
         geojson_features = []
         for i, r in enumerate(self._gis_records):
             uid = r.get(uid_col, r.get('UID', ''))
@@ -565,24 +624,9 @@ class PropertyTaxPipeline:
             if i < len(self._polygons):
                 try:
                     poly = self._polygons[i]
-                    # Convert exterior ring
-                    exterior_coords = []
-                    for x, y in poly.exterior.coords:
-                        lat, lon = utm_to_wgs84(x, y, self.config.utm_zone)
-                        exterior_coords.append([round(lon, 7), round(lat, 7)])  # GeoJSON is [lon, lat]
-                    
-                    # Convert interior rings (holes), if any
-                    interior_rings = []
-                    for interior in poly.interiors:
-                        ring_coords = []
-                        for x, y in interior.coords:
-                            lat, lon = utm_to_wgs84(x, y, self.config.utm_zone)
-                            ring_coords.append([round(lon, 7), round(lat, 7)])
-                        interior_rings.append(ring_coords)
-                    
-                    coordinates = [exterior_coords] + interior_rings
-                    geometry = {"type": "Polygon", "coordinates": coordinates}
-                    has_polygon = True
+                    if poly is not None:
+                        geometry = mapping(transform(transformer.transform, poly))
+                        has_polygon = True
                 except Exception:
                     pass  # geometry stays None — valid GeoJSON
 
@@ -601,6 +645,9 @@ class PropertyTaxPipeline:
                 "status": meta["status"],
                 "tax_status": meta["tax_status"],
                 "geo_status": geo_status,
+                "month": self.config.data_month or "",
+                "run_id": self.config.run_id or "",
+                "schema_version": self.config.schema_version or SCHEMA_VERSION,
                 "electricity_account_no": str(conf.get("account_no", "")),
                 "electricity_holder_name": str(conf.get("holder_name", "")),
             }
@@ -613,6 +660,9 @@ class PropertyTaxPipeline:
 
         geojson = {
             "type": "FeatureCollection",
+            "schema_version": self.config.schema_version or SCHEMA_VERSION,
+            "run_id": self.config.run_id or "",
+            "month": self.config.data_month or "",
             "features": geojson_features,
         }
         geojson_path = os.path.join(
@@ -640,6 +690,9 @@ class PropertyTaxPipeline:
         # Fix 2 contract column: stable join key so this file can be joined
         # against other months' outputs.
         register["property_uid"] = register["propertyid"].astype(str).map(lambda pid: f"PT:{pid}")
+        register["month"] = self.config.data_month or ""
+        register["run_id"] = self.config.run_id or ""
+        register["schema_version"] = self.config.schema_version or SCHEMA_VERSION
 
         register_path = os.path.join(
             self.config.output_dir, 
@@ -649,7 +702,16 @@ class PropertyTaxPipeline:
         print(f"  Match register saved: {register_path}")
 
         # Compute summary
-        summary = compute_summary(register, self._gis_records, self.config, self._gis_columns)
+        summary = compute_summary(
+            register,
+            self._gis_records,
+            self.config,
+            self._gis_columns,
+            parcel_register=self._defaulter_list_df,
+        )
+        summary["month"] = self.config.data_month or ""
+        summary["run_id"] = self.config.run_id or ""
+        summary["schema_version"] = self.config.schema_version or SCHEMA_VERSION
         print_summary(summary)
 
         # Save summary JSON
@@ -657,8 +719,8 @@ class PropertyTaxPipeline:
             self.config.output_dir, 
             f"{self.config.name}_summary.json"
         )
-        with open(summary_path, 'w') as f:
-            json.dump(summary, f, indent=2)
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
         print(f"  Summary saved: {summary_path}")
 
         # Update result

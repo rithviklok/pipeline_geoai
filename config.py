@@ -75,6 +75,9 @@ class CityConfig:
     electricity_path: Optional[str] = None
     geoai_output_path: Optional[str] = None
     output_dir: str = "results"
+    run_id: Optional[str] = None
+    data_month: Optional[str] = None
+    schema_version: str = "1.0"
 
     # ── Column mappings (None = auto-detect) ─────────────────────────────
     mseva_columns: Optional[Dict[str, str]] = None

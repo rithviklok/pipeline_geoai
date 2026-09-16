@@ -153,7 +153,7 @@ def match_electricity_taxpayers(
     gcols = config.gis_columns
     elec_cols = config.elec_columns or {}
 
-    pid_col = mcols.get("propertyid", "propertyid")
+    pid_col = mcols.get("property_id", "propertyid")
     uid_field = gcols.get("uid", "UID")
 
     elec_lat_col = elec_cols.get("latitude", "latitude")

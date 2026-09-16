@@ -1,6 +1,16 @@
 ﻿import pandas as pd
 
-def standardize_csv(filepath, city, state, month):
+from .contracts import SCHEMA_VERSION
+
+
+def standardize_csv(
+    filepath,
+    city,
+    state,
+    month,
+    run_id="",
+    schema_version=SCHEMA_VERSION,
+):
     """Insert the standard City/State/month columns for downstream/database
     ingestion.
 
@@ -9,13 +19,26 @@ def standardize_csv(filepath, city, state, month):
     so re-running or re-publishing an old run's outputs never silently
     relabels them with today's date.
     """
-    try:
-        df = pd.read_csv(filepath)
-        df.insert(0, "City", city)
-        df.insert(1, "State", state)
-        df.insert(2, "month", month)
-        df.to_csv(filepath, index=False)
-        print(f"Standardized {filepath}")
-    except Exception as e:
-        print(f"Could not standardize {filepath}: {e}")
+    # Contract IDs must remain byte-for-byte strings (for example "00123").
+    # Default pandas inference would coerce these to integers and break the
+    # property_uid/source-ID reconciliation.
+    df = pd.read_csv(
+        filepath,
+        dtype=str,
+        keep_default_na=False,
+        low_memory=False,
+    )
+    values = {
+        "City": city,
+        "State": state,
+        "month": month,
+        "run_id": run_id,
+        "schema_version": schema_version,
+    }
+    for column, value in reversed(values.items()):
+        if column in df.columns:
+            df.pop(column)
+        df.insert(0, column, value)
+    df.to_csv(filepath, index=False)
+    print(f"Standardized {filepath}")
 

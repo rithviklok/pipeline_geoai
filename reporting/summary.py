@@ -28,8 +28,8 @@ def build_match_register(
     if mseva_columns is None:
         mseva_columns = config.mseva_columns or {}
 
-    pid_col = mseva_columns.get("propertyid", "propertyid")
-    old_pid_col = mseva_columns.get("old_propertyid", "oldpropertyid")
+    pid_col = mseva_columns.get("property_id", "propertyid")
+    old_pid_col = mseva_columns.get("old_property_id", "oldpropertyid")
     owner_col = mseva_columns.get("owner", "ownername")
     guard_col = mseva_columns.get("guardian", "guardianname")
     mob_col = mseva_columns.get("mobile", "mobileno")
@@ -115,6 +115,7 @@ def compute_summary(
     gis_records: list,
     config: CityConfig,
     gis_columns: dict = None,
+    parcel_register: pd.DataFrame = None,
 ) -> dict:
     """Compute matches, unmatched, layers breakdown and defaulters statistics."""
     if gis_columns is None:
@@ -142,33 +143,44 @@ def compute_summary(
         valid_geocode = register[register["geocode_accuracy"].astype(str).str.strip() != ""]
         geocode_quality = {k: int(v) for k, v in valid_geocode["geocode_accuracy"].value_counts().items()}
 
-    # Separate taxable vs exempted GIS polygons
-    exempted_col = gis_columns.get("exempted")
-    taxable_uids = set()
-    exempted_uids = set()
-    for r in gis_records:
-        uid = r.get(uid_field)
-        if not uid:
-            continue
-        exempt_val = str(r.get(exempted_col, "")).strip().lower() if exempted_col else ""
-        if exempt_val == "exempted":
-            exempted_uids.add(uid)
-        else:
-            taxable_uids.add(uid)
-
-    taxable_defaulters = taxable_uids - matched_uids
+    if parcel_register is not None and "tax_status" in parcel_register.columns:
+        tax_status_counts = {
+            str(key): int(value)
+            for key, value in parcel_register["tax_status"].value_counts().items()
+        }
+        emitted_gis_rows = len(parcel_register)
+        exempted_count = tax_status_counts.get("EXEMPT", 0)
+        taxable_count = emitted_gis_rows - exempted_count
+        potential_defaulters = tax_status_counts.get("SUSPECTED", 0)
+    else:
+        # Compatibility fallback for callers that do not yet pass the emitted
+        # parcel register. A populated exemption-category means exempt.
+        exempted_col = gis_columns.get("exempted")
+        non_exempt = {"", "na", "n/a", "none", "null", "0", "no", "n", "false"}
+        exempted_count = sum(
+            1
+            for r in gis_records
+            if exempted_col
+            and str(r.get(exempted_col, "")).strip().casefold() not in non_exempt
+        )
+        taxable_count = len(gis_records) - exempted_count
+        potential_defaulters = max(taxable_count - len(matched_uids), 0)
+        emitted_gis_rows = len(gis_records)
+        tax_status_counts = {}
 
     summary = {
         "city": config.name,
         "total_mseva": len(register),
         "total_gis": len(gis_records),
-        "total_gis_taxable": len(taxable_uids),
-        "total_gis_exempted": len(exempted_uids),
+        "emitted_gis_rows": emitted_gis_rows,
+        "total_gis_taxable": taxable_count,
+        "total_gis_exempted": exempted_count,
         "matched_count": int(has_uid.sum()),
         "unmatched_count": int((~has_uid).sum()),
-        "match_rate": float(has_uid.sum() / len(register) * 100),
+        "match_rate": float(has_uid.sum() / len(register) * 100) if len(register) else 0.0,
         "unique_gis_matched": len(matched_uids),
-        "potential_defaulters": len(taxable_defaulters),
+        "potential_defaulters": potential_defaulters,
+        "tax_status_counts": tax_status_counts,
         "layer_breakdown": layer_breakdown,
         "parser_quality": parser_quality,
         "geocode_quality": geocode_quality,
@@ -197,7 +209,7 @@ def print_summary(summary: dict):
     print(f"Potential defaulters:  {summary['potential_defaulters']:,} (taxable only)")
     print("\nLayer Breakdown:")
     for method, count in sorted(summary["layer_breakdown"].items()):
-        pct = count / summary["total_mseva"] * 100
+        pct = count / summary["total_mseva"] * 100 if summary["total_mseva"] else 0
         print(f"  {method:30s}: {count:>6,} ({pct:>5.1f}%)")
         
     print("=" * 70)

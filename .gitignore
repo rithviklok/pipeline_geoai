@@ -1,5 +1,6 @@
 ﻿# 🛑 Pipeline output & caches (large data files) 🛑
 results/
+e2e_results/
 models/
 
 # 🛑 Test and sample data 🛑

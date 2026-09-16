@@ -51,7 +51,7 @@ def match_name_locality(
     mcols = config.mseva_columns
     gcols = config.gis_columns
 
-    pid_col = mcols.get("propertyid", "propertyid")
+    pid_col = mcols.get("property_id", "propertyid")
     uid_field = gcols.get("uid", "UID")
     gis_owner_field = gcols.get("owner", "Owner_Name")
     gis_guardian_field = gcols.get("guardian", "Father_Hus")

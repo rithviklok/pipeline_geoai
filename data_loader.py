@@ -30,11 +30,12 @@ logger = logging.getLogger(__name__)
 COLUMN_PATTERNS: dict[str, list[str]] = {
     "owner": [
         "ownername", "owner_name", "owner_nam", "Owner_Name",
-        "name", "owner",
+        "Property_O", "name", "owner",
     ],
     "guardian": [
         "guardianname", "guardian_name", "Father_Hus", "father_hus",
-        "father_name", "guardian", "fathername",
+        "guardianna", "father_name", "Father_Nam", "Husband_Na",
+        "guardian", "fathername",
     ],
     "mobile": [
         "mobileno", "mobile_no", "Mobile_No", "mobile",
@@ -44,25 +45,27 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
         "Proper_Address", "proper_address",
         "formatted_address", "full_address",
         "address", "Address", "PROPERTY ADDRESS",
-        "propertyaddress",
+        "address_1", "propertyaddress",
     ],
     "locality": [
         "localityname", "locality_name", "Locality", "locality",
-        "mohalla", "colony",
+        "localityna", "Locality_N", "mohalla", "colony",
     ],
     "ward": [
-        "ward", "Ward", "wardname", "ward_no",
+        "ward", "Ward", "wardname", "ward_no", "Ward_No",
         "blockname", "zonename", "ward_number",
     ],
     "property_id": [
         "propertyid", "property_id", "Property_ID", "prop_id",
+        "propertytaxuniqueid",
     ],
     "old_property_id": [
         "oldpropertyid", "old_property_id", "Old_Uid",
-        "old_uid", "OLD UID",
+        "old_uid", "OLD UID", "Old_UID",
     ],
+    "survey_id": ["surveyid", "survey_id", "Survey_Id", "survey_id"],
     "uid": ["UID", "uid", "Uid", "UNIQUE_ID"],
-    "uid_old": ["uid_old", "old_uid", "Old_Uid", "OLD UID"],
+    "uid_old": ["uid_old", "old_uid", "Old_Uid", "OLD UID", "Old_UID"],
     "latitude": ["latitude", "lat", "LAT", "Latitude", "y"],
     "longitude": ["longitude", "lon", "lng", "LONG", "Longitude", "x"],
     "all_owners": ["all_ownernames", "all_owners"],
@@ -80,7 +83,7 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
     ],
     "exempted": [
         "Exempted", "exempted", "exempt", "tax_status",
-        "taxable", "Taxable",
+        "taxable", "Taxable", "Exempted_C",
     ],
     "property_usage": [
         "property_u", "property_usage", "Property_Usage",

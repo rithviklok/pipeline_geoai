@@ -58,7 +58,7 @@ def match_mobile(
     """
     mcols = config.mseva_columns
     gcols = config.gis_columns
-    pid_col = mcols.get("propertyid", "propertyid")
+    pid_col = mcols.get("property_id", "propertyid")
     uid_field = gcols.get("uid", "UID")
 
     # ── Junk mobile number filtering ──────────────────────────────────

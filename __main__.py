@@ -57,6 +57,8 @@ def main():
         help="Month this refresh represents, format YYYY-MM (default: current month). "
              "Recorded in the run's provenance manifest; does not filter input data.",
     )
+    parser.add_argument("--run-id", help=argparse.SUPPRESS)
+    parser.add_argument("--owner", default="cli", help="Operator recorded on the run")
 
     args = parser.parse_args()
 
@@ -102,11 +104,17 @@ def main():
     from .run_manager import RefreshFailedError, execute_pipeline_run
 
     try:
-        execute_pipeline_run(
+        manifest = execute_pipeline_run(
             config=config,
             steps=args.steps,
             change_detection_path=args.change_detection,
             month=args.month,
+            run_id=args.run_id,
+            owner=args.owner,
+        )
+        print(
+            f"\n[PUBLISHED] run_id={manifest['run_id']} "
+            f"month={manifest['month']} outputs={len(manifest.get('outputs', {}))}"
         )
     except RefreshFailedError as e:
         print(f"\n[REFRESH FAILED] {e}\n", file=sys.stderr)

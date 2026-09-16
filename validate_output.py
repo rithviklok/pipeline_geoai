@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List
 
 import pandas as pd
+
+from .contracts import GEO_STATUSES, SCHEMA_VERSION, TAX_STATUSES
 
 # Data Dictionary §3.2 — Match Register CSV (columns beyond the pass-through
 # original mSeva fields).
@@ -31,7 +34,7 @@ import pandas as pd
 MATCH_REGISTER_REQUIRED_COLUMNS = [
     "propertyid", "matched_uid", "match_method",
     "gis_owner_name", "gis_mobile", "gis_locality",
-    "property_uid", "month",
+    "property_uid", "month", "run_id", "schema_version",
 ]
 
 # Data Dictionary §3.3 — Defaulters CSV (now the unified GIS-parcel register:
@@ -44,6 +47,7 @@ DEFAULTERS_CSV_REQUIRED_COLUMNS = [
     "latitude", "longitude", "property_usage", "property_type", "status",
     "electricity_account_no", "electricity_holder_name",
     "property_uid", "tax_status", "geo_status", "ward_id", "month",
+    "run_id", "schema_version",
 ]
 
 # Data Dictionary §3.4 — Defaulters GeoJSON feature properties (unified
@@ -53,13 +57,15 @@ DEFAULTERS_GEOJSON_REQUIRED_PROPERTIES = [
     "gis_uid", "gis_owner_name", "gis_guardian_name", "gis_mobile", "gis_locality",
     "property_usage", "property_type", "status",
     "electricity_account_no", "electricity_holder_name",
-    "property_uid", "tax_status", "geo_status", "ward_id",
+    "property_uid", "tax_status", "geo_status", "ward_id", "month",
+    "run_id", "schema_version",
 ]
 
 # Data Dictionary §3.5 — Summary JSON.
 SUMMARY_JSON_REQUIRED_KEYS = [
     "city", "total_mseva", "total_gis", "matched_count", "unmatched_count",
-    "match_rate", "layer_breakdown",
+    "match_rate", "layer_breakdown", "emitted_gis_rows", "potential_defaulters",
+    "tax_status_counts", "month", "run_id", "schema_version",
 ]
 
 
@@ -93,8 +99,14 @@ def _check_geojson_properties(path: str, required: List[str]) -> ValidationResul
     features = data.get("features", [])
     if not features:
         return ValidationResult(file=path, ok=True, note="no features to validate (empty output)")
-    properties = set(features[0].get("properties", {}).keys())
-    missing = [c for c in required if c not in properties]
+    missing = sorted(
+        {
+            column
+            for feature in features
+            for column in required
+            if column not in feature.get("properties", {})
+        }
+    )
     return ValidationResult(file=path, ok=not missing, missing=missing)
 
 
@@ -108,6 +120,129 @@ def _check_json_keys(path: str, required: List[str]) -> ValidationResult:
         return ValidationResult(file=path, ok=False, note=f"could not read: {e}")
     missing = [c for c in required if c not in data]
     return ValidationResult(file=path, ok=not missing, missing=missing)
+
+
+def _check_reconciliation(output_dir: str, city: str) -> ValidationResult:
+    """Verify counts, IDs and enums across all published contract files."""
+    label = os.path.join(output_dir, f"{city} output bundle")
+    try:
+        parcels = pd.read_csv(
+            os.path.join(output_dir, f"{city}_Defaulters.csv"),
+            dtype=str,
+            keep_default_na=False,
+        )
+        matches = pd.read_csv(
+            os.path.join(output_dir, f"{city}_Match_Register.csv"),
+            dtype=str,
+            keep_default_na=False,
+        )
+        with open(
+            os.path.join(output_dir, f"{city}_Defaulters.geojson"),
+            "r",
+            encoding="utf-8",
+        ) as f:
+            geojson = json.load(f)
+        with open(
+            os.path.join(output_dir, f"{city}_summary.json"),
+            "r",
+            encoding="utf-8",
+        ) as f:
+            summary = json.load(f)
+    except Exception as e:
+        return ValidationResult(file=label, ok=False, note=f"could not reconcile: {e}")
+
+    problems = []
+    features = geojson.get("features", [])
+    expected_gis = int(summary.get("total_gis", -1))
+    if len(parcels) != expected_gis:
+        problems.append(f"parcel CSV rows {len(parcels)} != total_gis {expected_gis}")
+    if len(features) != expected_gis:
+        problems.append(f"GeoJSON features {len(features)} != total_gis {expected_gis}")
+    if int(summary.get("emitted_gis_rows", -1)) != expected_gis:
+        problems.append("summary emitted_gis_rows does not equal total_gis")
+    if len(matches) != int(summary.get("total_mseva", -1)):
+        problems.append("match-register rows do not equal total_mseva")
+
+    gis_uids = parcels.get("gis_uid", pd.Series(dtype=str)).astype(str).str.strip()
+    property_uids = parcels.get("property_uid", pd.Series(dtype=str)).astype(str).str.strip()
+    if gis_uids.eq("").any():
+        problems.append("parcel CSV contains blank gis_uid")
+    if property_uids.eq("").any() or property_uids.duplicated().any():
+        problems.append("parcel property_uid must be nonblank and unique")
+    if len(parcels) and not (property_uids == "GIS:" + gis_uids).all():
+        problems.append("parcel property_uid is not GIS:{gis_uid}")
+
+    pt_ids = matches.get("propertyid", pd.Series(dtype=str)).astype(str).str.strip()
+    pt_uids = matches.get("property_uid", pd.Series(dtype=str)).astype(str).str.strip()
+    if pt_ids.eq("").any() or pt_uids.eq("").any():
+        problems.append("match register contains blank property identity")
+    if len(matches) and not (pt_uids == "PT:" + pt_ids).all():
+        problems.append("match property_uid is not PT:{propertyid}")
+
+    tax_status = parcels.get("tax_status", pd.Series(dtype=str)).astype(str)
+    geo_status = parcels.get("geo_status", pd.Series(dtype=str)).astype(str)
+    invalid_tax = sorted(set(tax_status) - TAX_STATUSES)
+    invalid_geo = sorted(set(geo_status) - GEO_STATUSES)
+    if invalid_tax:
+        problems.append(f"invalid tax_status values: {invalid_tax}")
+    if invalid_geo:
+        problems.append(f"invalid geo_status values: {invalid_geo}")
+
+    status_counts = {str(k): int(v) for k, v in tax_status.value_counts().items()}
+    if sum(status_counts.values()) != expected_gis:
+        problems.append("tax-status totals do not equal total_gis")
+    if status_counts.get("SUSPECTED", 0) != int(
+        summary.get("potential_defaulters", -1)
+    ):
+        problems.append("emitted SUSPECTED count differs from summary")
+    if status_counts != summary.get("tax_status_counts", {}):
+        problems.append("summary tax_status_counts differ from parcel CSV")
+
+    months = set(parcels.get("month", pd.Series(dtype=str)).astype(str))
+    run_ids = set(parcels.get("run_id", pd.Series(dtype=str)).astype(str))
+    versions = set(
+        parcels.get("schema_version", pd.Series(dtype=str)).astype(str)
+    )
+    if len(months) != 1 or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", next(iter(months), "")):
+        problems.append("parcel month is not one canonical YYYY-MM value")
+    if months != {str(summary.get("month", ""))}:
+        problems.append("parcel and summary months differ")
+    if run_ids != {str(summary.get("run_id", ""))} or "" in run_ids:
+        problems.append("parcel and summary run_ids differ or are blank")
+    if versions != {SCHEMA_VERSION} or summary.get("schema_version") != SCHEMA_VERSION:
+        problems.append("unexpected schema_version")
+
+    feature_props = [feature.get("properties", {}) for feature in features]
+    if geojson.get("schema_version") != SCHEMA_VERSION:
+        problems.append("GeoJSON has unexpected top-level schema_version")
+    if geojson.get("run_id") != summary.get("run_id"):
+        problems.append("GeoJSON and summary run_ids differ")
+    if geojson.get("month") != summary.get("month"):
+        problems.append("GeoJSON and summary months differ")
+    if feature_props:
+        geo_ids = [str(props.get("property_uid", "")) for props in feature_props]
+        if geo_ids != property_uids.tolist():
+            problems.append("GeoJSON and parcel CSV property order/IDs differ")
+        geo_tax_counts = pd.Series(
+            [props.get("tax_status", "") for props in feature_props]
+        ).value_counts().to_dict()
+        if geo_tax_counts != status_counts:
+            problems.append("GeoJSON and parcel CSV tax-status counts differ")
+        geo_geo_statuses = [
+            str(props.get("geo_status", "")) for props in feature_props
+        ]
+        if geo_geo_statuses != geo_status.tolist():
+            problems.append("GeoJSON and parcel CSV geo_status values differ")
+        for feature, status_value in zip(features, geo_geo_statuses):
+            geometry = feature.get("geometry")
+            if status_value == "NONE" and geometry is not None:
+                problems.append("geo_status NONE has a GeoJSON geometry")
+                break
+            if status_value in {"SHAPE", "DOT"} and geometry is None:
+                problems.append(f"geo_status {status_value} has no GeoJSON geometry")
+                break
+
+    return ValidationResult(file=label, ok=not problems, note="; ".join(problems))
 
 
 def validate_city_outputs(output_dir: str, city: str) -> Dict[str, ValidationResult]:
@@ -133,6 +268,7 @@ def validate_city_outputs(output_dir: str, city: str) -> Dict[str, ValidationRes
             os.path.join(output_dir, f"{city}_summary.json"),
             SUMMARY_JSON_REQUIRED_KEYS,
         ),
+        "reconciliation": _check_reconciliation(output_dir, city),
     }
 
 

@@ -1,75 +1,103 @@
-﻿# Property Tax Defaulter Identification Pipeline
+﻿# Property Tax GeoAI Pipeline
 
-Modular, city-agnostic AI pipeline that matches mSeva property-tax records against GIS survey polygons to identify likely tax **defaulters** (properties present in the GIS survey but absent from the tax roll).
-
-It runs a layered matcher:
-1. **GeoAI Semantic Matching:** Vector-based embedding matching (FAISS + SentenceTransformers) against the GIS Knowledge Base.
-2. **Mobile Number Matching:** Cross-referencing 10-digit mobile numbers.
-3. **Electricity Matching:** Point-in-polygon matching of electricity billing coordinates against GIS building footprints.
-4. **Name + Locality Matching:** Dynamic cross-referencing of names within localized regions.
-
-It also integrates **Google Earth Engine Change Detection** to identify massive swaths of newly constructed un-taxed buildings (e.g. new colonies).
-
-## Production Features
-
-This pipeline is hardened for production monthly-refreshes:
-- **Run Manager:** Enforces per-city locking to prevent concurrent runs from corrupting data.
-- **Atomic Publish:** Outputs are built in an isolated .runs/ directory and only published to esults/ if the *entire* process succeeds.
-- **Data Validation:** Enforces a strict, signed-off Data Dictionary schema before publishing.
-- **Read-Only API:** A FastAPI backend server to serve the latest published GeoJSON and CSV outputs directly to the Vercel Dashboard.
-
-For comprehensive operational instructions, troubleshooting, and API usage, see the **[Operating Runbook](RUNBOOK.md)**.
+The pipeline matches mSeva tax records to GIS parcels and publishes a complete,
+versioned property snapshot. Matching logic remains in `matchers/`; the
+run-management shell provides durable jobs, validation, and immutable outputs.
 
 ## Requirements
 
-- **Python >= 3.10**
-- Dependencies listed in equirements.txt: pandas, geopandas, scikit-learn, sentence-transformers, aiss-cpu, apidfuzz, tree, pyogrio, astapi, uvicorn, etc.
+- Python 3.10+
+- `pip install -r pipeline_geoai/requirements.txt`
+- Run package commands from the directory containing `pipeline_geoai/`
 
-## Setup
+The pipeline runs on Linux, macOS, and Windows. Examples show Linux/macOS
+first, with a PowerShell equivalent where the shell syntax differs.
 
-### 1. Create and activate a virtual environment
+## Run from the CLI
 
-Windows (PowerShell):
-`powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-`
+Linux / macOS:
 
-macOS / Linux:
-`ash
-python3 -m venv .venv
-source .venv/bin/activate
-`
+```bash
+python -m pipeline_geoai \
+  --city "Mohali" \
+  --state "Punjab" \
+  --month "2026-09" \
+  --mseva "Mohali/MohaliDataset/mseva.csv" \
+  --gis "Mohali/MohaliDataset/mohaligis.shp" \
+  --electricity "Mohali/MohaliDataset/electricity.csv" \
+  --output "pipeline_geoai/results" \
+  --owner "operator-name"
+```
 
-### 2. Install dependencies
+Windows PowerShell:
 
-`ash
-pip install -r requirements.txt
-`
+```powershell
+python -m pipeline_geoai `
+  --city "Mohali" `
+  --state "Punjab" `
+  --month "2026-09" `
+  --mseva "Mohali/MohaliDataset/mseva.csv" `
+  --gis "Mohali/MohaliDataset/mohaligis.shp" `
+  --electricity "Mohali/MohaliDataset/electricity.csv" `
+  --output "pipeline_geoai/results" `
+  --owner "operator-name"
+```
 
-## Running the Pipeline
+The command prints its `run_id`. A successful run is published to:
 
-The package is invoked with python -m pipeline_geoai, which must be run from the **parent** directory (the folder that *contains* this pipeline_geoai directory).
+```text
+results/{city}/{YYYY-MM}/{run_id}/
+```
 
-Windows (PowerShell):
-`powershell
-cd ..
-py -m pipeline_geoai --city Barnala --state Punjab 
-  --mseva "Barnala\mseva_enriched.csv" 
-  --gis "Barnala\gissurvey.shp" 
-  --electricity "Barnala\electricity.csv" 
-  --output "pipeline_geoai\results" 
-  --change-detection "Barnala\Barnala_CD\Barnala_New_Constructions.shp"
-`
+Published directories and terminal manifests are immutable. The
+`{city}_latest_manifest.json` file is an atomic pointer to the newest successful
+run.
 
-## Running the API Dashboard Backend
+## Run as a job API
 
-To serve the generated pipeline outputs to the frontend Vercel Dashboard:
-`powershell
- = "pipeline_geoai\results"
-py -m pipeline_geoai.api
-`
-This spins up a read-only FastAPI service (default http://127.0.0.1:8000) providing endpoints like /cities/{city}/defaulters.geojson and /cities/{city}/summary.
+Linux / macOS:
 
----
-*Please refer to [RUNBOOK.md](RUNBOOK.md) for full documentation on alert hooks, failure recovery, and provenance manifests.*
+```bash
+export PIPELINE_OUTPUT_DIR="pipeline_geoai/results"
+export PIPELINE_API_KEY="replace-with-a-secret"
+python -m pipeline_geoai.api
+```
+
+Windows PowerShell:
+
+```powershell
+$env:PIPELINE_OUTPUT_DIR = "pipeline_geoai/results"
+$env:PIPELINE_API_KEY = "replace-with-a-secret"
+python -m pipeline_geoai.api
+```
+
+Submit a full job and poll it:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/runs \
+  -H "X-API-Key: $PIPELINE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "city": "Mohali",
+    "state": "Punjab",
+    "month": "2026-09",
+    "mseva_path": "/data/Mohali/MohaliDataset/mseva.csv",
+    "gis_path": "/data/Mohali/MohaliDataset/mohaligis.shp",
+    "electricity_path": "/data/Mohali/MohaliDataset/electricity.csv",
+    "owner": "operator-name"
+  }'
+
+curl -s -H "X-API-Key: $PIPELINE_API_KEY" \
+  http://127.0.0.1:8000/runs/<run_id>
+```
+
+The API returns `202` immediately. Jobs continue if the submitting client
+disconnects. If the API process is restarted, unfinished jobs are requeued and
+a valid inference checkpoint is reused.
+
+Retry a failed run with `POST /runs/{run_id}/retry`. The retry receives a new
+run ID and reuses the failed run's validated inference checkpoint when present;
+the original failed receipt remains immutable.
+
+See [API.md](API.md) for every endpoint, request body, and download URL.
+See [RUNBOOK.md](RUNBOOK.md) for recovery, locks, and on-disk layout.

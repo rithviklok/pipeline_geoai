@@ -30,7 +30,8 @@ _ANOMALY_WATCHED_FIELDS = [
 
 def _dispatch(kind: str, city: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:
     payload = {"kind": kind, "city": city, "message": message, "context": context or {}}
-    logger.error("[ALERT:%s] %s — %s", kind, city, message)
+    log = logger.info if kind == "REFRESH_SUCCEEDED" else logger.error
+    log("[ALERT:%s] %s — %s", kind, city, message)
 
     webhook = os.environ.get(ALERT_WEBHOOK_ENV)
     if not webhook:
@@ -50,6 +51,15 @@ def _dispatch(kind: str, city: str, message: str, context: Optional[Dict[str, An
 def refresh_failed(city: str, error: str, context: Optional[Dict[str, Any]] = None) -> None:
     """Ticket 4.5: a refresh failed, or didn't start when scheduled."""
     _dispatch("REFRESH_FAILED", city, error, context)
+
+
+def refresh_succeeded(
+    city: str,
+    message: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Notify consumers only after a run has been published completely."""
+    _dispatch("REFRESH_SUCCEEDED", city, message, context)
 
 
 def input_missing_or_stale(city: str, message: str, context: Optional[Dict[str, Any]] = None) -> None:

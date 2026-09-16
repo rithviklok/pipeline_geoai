@@ -21,9 +21,12 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+
+from .contracts import SCHEMA_VERSION
 
 MANIFEST_DIR_NAME = ".manifests"
 
@@ -80,6 +83,17 @@ def build_input_manifest(config) -> Dict[str, Any]:
             )
         else:
             entry["exists"] = False
+        if key == "gis_path" and os.path.splitext(path)[1].lower() == ".shp":
+            components = {}
+            stem = os.path.splitext(path)[0]
+            for extension in (".shp", ".shx", ".dbf", ".prj", ".cpg"):
+                component_path = stem + extension
+                if os.path.exists(component_path):
+                    components[extension] = {
+                        "sha256": compute_file_hash(component_path),
+                        "size_bytes": os.path.getsize(component_path),
+                    }
+            entry["components"] = components
         inputs[key] = entry
     return inputs
 
@@ -136,6 +150,7 @@ def build_manifest(
     stays a stable pointer regardless of the nested publish layout.
     """
     manifest = {
+        "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "city": config.name,
         "state": config.state,
@@ -166,14 +181,42 @@ def _manifest_dir(output_dir: str, city: str) -> str:
     return d
 
 
+def _write_json_atomic(path: str, payload: Dict[str, Any], *, replace: bool) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        if replace:
+            os.replace(temp_path, path)
+        else:
+            try:
+                os.link(temp_path, path)
+            except FileExistsError:
+                raise FileExistsError(
+                    f"Refusing to overwrite immutable receipt: {path}"
+                )
+            os.remove(temp_path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_manifest(output_dir: str, city: str, manifest: Dict[str, Any]) -> str:
     """Persist a manifest to the append-only manifest history. Never overwrites
     a prior run's record — every run (success or failure) gets its own file,
     satisfying "both runs are recorded separately" (ticket 1.14)."""
     d = _manifest_dir(output_dir, city)
     path = os.path.join(d, f"{manifest['run_id']}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False, default=str)
+    _write_json_atomic(path, manifest, replace=False)
     return path
 
 
@@ -185,6 +228,7 @@ def publish_latest(output_dir: str, city: str, manifest: Dict[str, Any], manifes
     finishes with status == 'success'."""
     pointer = {
         "city": city,
+        "schema_version": manifest.get("schema_version", SCHEMA_VERSION),
         "run_id": manifest["run_id"],
         "month": manifest["month"],
         "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -192,8 +236,7 @@ def publish_latest(output_dir: str, city: str, manifest: Dict[str, Any], manifes
         "outputs": manifest["outputs"],
     }
     pointer_path = os.path.join(output_dir, f"{city}_latest_manifest.json")
-    with open(pointer_path, "w", encoding="utf-8") as f:
-        json.dump(pointer, f, indent=2, ensure_ascii=False)
+    _write_json_atomic(pointer_path, pointer, replace=True)
     return pointer_path
 
 
@@ -217,3 +260,11 @@ def load_manifest_history(output_dir: str, city: str) -> List[Dict[str, Any]]:
                 records.append(json.load(f))
     records.sort(key=lambda m: m.get("started_at", ""))
     return records
+
+
+def load_manifest(output_dir: str, city: str, run_id: str) -> Optional[Dict[str, Any]]:
+    path = os.path.join(output_dir, MANIFEST_DIR_NAME, city, f"{run_id}.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
