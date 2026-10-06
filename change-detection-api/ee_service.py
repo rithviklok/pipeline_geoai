@@ -38,18 +38,31 @@ GIS_SURVEY_YEARS: dict[str, int] = {
 EE_SCOPES = ["https://www.googleapis.com/auth/earthengine"]
 
 
+from google.oauth2 import service_account
+
+
 # ── Initialization ─────────────────────────────────────────────────────────────
 
 def initialize_ee() -> None:
     """
-    Initialize Google Earth Engine using Application Default Credentials.
+    Initialize Google Earth Engine.
 
-    Cloud Run : The attached service account is picked up automatically via ADC.
-    Local dev : Falls back to cached user credentials from `earthengine authenticate`.
+    Cloud Run : ADC picks it up automatically.
+    Local dev : Uses GEE_SERVICE_ACCOUNT_KEY_PATH if provided, else falls back
+                to cached user credentials from `earthengine authenticate`.
     """
     project = os.environ.get("GEE_PROJECT_ID", "change-detection-494607")
+    key_path = os.environ.get("GEE_SERVICE_ACCOUNT_KEY_PATH")
 
     try:
+        if key_path and os.path.exists(key_path):
+            credentials = service_account.Credentials.from_service_account_file(
+                key_path, scopes=EE_SCOPES
+            )
+            ee.Initialize(credentials, project=project)
+            print(f"[OK] EE initialized (Service Account File) — project: {project}")
+            return
+
         credentials, detected_project = google.auth.default(scopes=EE_SCOPES)
         ee.Initialize(credentials, project=project or detected_project)
         print(f"[OK] EE initialized (ADC) — project: {project or detected_project}")
@@ -64,16 +77,48 @@ def initialize_ee() -> None:
             raise RuntimeError(f"EE Initialization failed: {exc}") from exc
 
 
+import json
+
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
-def _get_roi(bounds: list[float]) -> ee.Geometry:
-    """Create an Earth Engine Rectangle from [W, S, E, N] bounds."""
+def _get_roi(city_name: str, bounds: list[float]) -> ee.Geometry:
+    """
+    Get the Earth Engine Geometry for the city.
+    First tries to load a precise GeoJSON boundary from the boundaries/ folder.
+    Falls back to a bounding box Rectangle if no GeoJSON is found.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    geojson_path = os.path.join(base_dir, "boundaries", f"{city_name}.geojson")
+    
+    if os.path.exists(geojson_path):
+        try:
+            with open(geojson_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            # Extract coordinates from the first feature
+            if data.get("type") == "FeatureCollection" and data.get("features"):
+                geom = data["features"][0]["geometry"]
+            elif data.get("type") == "Feature":
+                geom = data["geometry"]
+            else:
+                geom = data
+                
+            geom_type = geom.get("type")
+            coords = geom.get("coordinates")
+            
+            if geom_type == "Polygon":
+                return ee.Geometry.Polygon(coords)
+            elif geom_type == "MultiPolygon":
+                return ee.Geometry.MultiPolygon(coords)
+        except Exception as e:
+            print(f"[Warning] Failed to load {city_name}.geojson: {e}. Falling back to bounds.")
+            
     return ee.Geometry.Rectangle(bounds)
 
 
 # ── Public computation functions ───────────────────────────────────────────────
 
-def compute_change_map(year1: int, year2: int, bounds: list[float]) -> str:
+def compute_change_map(year1: int, year2: int, bounds: list[float], city_name: str) -> str:
     """
     AlphaEarth + NDBI + NDVI urban growth detection.
 
@@ -84,7 +129,7 @@ def compute_change_map(year1: int, year2: int, bounds: list[float]) -> str:
 
     Returns a GEE tile URL that Leaflet/Mapbox can render directly.
     """
-    aoi = _get_roi(bounds)
+    aoi = _get_roi(city_name, bounds)
 
     # ── 1. Landsat 8 — Baseline Year NDBI (Starts 2013) ───────────────────
     l8_baseline = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
@@ -135,11 +180,11 @@ def compute_change_map(year1: int, year2: int, bounds: list[float]) -> str:
     return map_id["tile_fetcher"].url_format
 
 
-def compute_area_stats(year1: int, year2: int, bounds: list[float]) -> dict:
+def compute_area_stats(year1: int, year2: int, bounds: list[float], city_name: str) -> dict:
     """
     Compute total new built-up area (sq km) detected between two years.
     """
-    aoi = _get_roi(bounds)
+    aoi = _get_roi(city_name, bounds)
 
     l8 = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
           .filterBounds(aoi).filterDate(f"{year1}-01-01", f"{year1}-12-31")
@@ -190,7 +235,7 @@ def compute_change_shapefile(year1: int, year2: int, bounds: list[float], city_n
     Computes urban growth, converts it to polygon clusters, filters out
     small clusters (< 0.5 ha), and returns a URL to download the result as a Shapefile.
     """
-    aoi = _get_roi(bounds)
+    aoi = _get_roi(city_name, bounds)
 
     l8 = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
           .filterBounds(aoi).filterDate(f"{year1}-01-01", f"{year1}-12-31")

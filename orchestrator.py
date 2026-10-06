@@ -15,7 +15,7 @@ from dataclasses import asdict
 from .contracts import SCHEMA_VERSION
 from .config import CityConfig, PipelineResult
 from .data_loader import load_mseva, load_gis, load_electricity, detect_columns
-from .helpers import normalize_mobile
+from .helpers import normalize_mobile, normalize_present_status
 from .matchers.mobile import match_mobile
 from .matchers.name_locality import match_name_locality
 from .matchers.electricity import confirm_defaulters, match_electricity_taxpayers
@@ -455,6 +455,7 @@ class PropertyTaxPipeline:
         exempted_col = self._gis_columns.get("exempted")
         prop_usage_col = self._gis_columns.get("property_usage")
         prop_type_col = self._gis_columns.get("property_type")
+        present_st_col = self._gis_columns.get("present_status")
 
         # Build a quick UID → record lookup for exemption status
         uid_to_record: dict = {}
@@ -580,6 +581,7 @@ class PropertyTaxPipeline:
                 "longitude": centroid_lon,
                 "property_usage": r.get(prop_usage_col, "") if prop_usage_col else "",
                 "property_type": r.get(prop_type_col, "") if prop_type_col else "",
+                "present_status": normalize_present_status(r.get(present_st_col, "")) if present_st_col else "",
                 "status": meta["status"],
                 "tax_status": meta["tax_status"],
                 "geo_status": geo_status,
@@ -642,6 +644,7 @@ class PropertyTaxPipeline:
                 "ward_id": str(meta["ward_id"]),
                 "property_usage": str(r.get(prop_usage_col, "")) if prop_usage_col else "",
                 "property_type": str(r.get(prop_type_col, "")) if prop_type_col else "",
+                "present_status": normalize_present_status(r.get(present_st_col, "")) if present_st_col else "",
                 "status": meta["status"],
                 "tax_status": meta["tax_status"],
                 "geo_status": geo_status,

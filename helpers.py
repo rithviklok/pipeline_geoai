@@ -409,3 +409,30 @@ def utm_to_wgs84(easting: float, northing: float, zone: int = 44) -> Tuple[float
 
     return math.degrees(lat), math.degrees(lon) + lon0
 
+
+def normalize_present_status(val) -> str:
+    """Normalize GIS Present_St values into canonical categories.
+
+    Handles data-entry typos and casing variants across survey datasets:
+    - BUILT_UP: Built Up, BUILT UP, Builtup, Tin Shed, Under construct, etc.
+    - VACANT: Vacant Plot, VACANT PLOT, Open Plot, PLOT, Vancant, etc.
+    - GREEN_BELT: Green Belt, etc.
+    - PARK: Park, PARK, etc.
+    - NON_PRODUCTIVE: Non-Productive, Non Prod, etc.
+    - OTHER: Parking, Pond, Forest, Agriculture, or empty/unspecified.
+    """
+    if not val or pd.isna(val):
+        return "UNKNOWN"
+    s = str(val).strip().upper()
+    if any(k in s for k in ["VAC", "OPEN PLOT", "PLOT", "VANC"]):
+        return "VACANT"
+    if any(k in s for k in ["BUIL", "BUIT", "BIU", "TIN SHED", "UNDER CONSTRUCT", "RESIDENTIAL", "SINGLE OWNER"]):
+        return "BUILT_UP"
+    if "GREEN" in s:
+        return "GREEN_BELT"
+    if "PARK" in s:
+        return "PARK"
+    if "NON" in s:
+        return "NON_PRODUCTIVE"
+    return "OTHER"
+

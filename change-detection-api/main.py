@@ -104,7 +104,7 @@ def change_map(req: ChangeRequest):
         tile_url = _cached_tile(
             cache_key,
             ee_service.compute_change_map,
-            req.year1, req.year2, bounds,
+            req.year1, req.year2, bounds, req.city
         )
         return TileResponse(
             tile_url=tile_url,
@@ -154,7 +154,7 @@ def area_stats(req: ChangeRequest):
         raise HTTPException(status_code=400, detail=f"Unknown city: {req.city}")
 
     try:
-        result = ee_service.compute_area_stats(req.year1, req.year2, bounds)
+        result = ee_service.compute_area_stats(req.year1, req.year2, bounds, req.city)
         result["city"] = req.city
         return AreaStatsResponse(**result)
     except Exception as exc:

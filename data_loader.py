@@ -86,12 +86,19 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
         "taxable", "Taxable", "Exempted_C",
     ],
     "property_usage": [
+        "usages_typ", "Usages_Typ", "usage_typ",
         "property_u", "property_usage", "Property_Usage",
         "land_use", "usage_type", "property_use",
     ],
     "property_type": [
-        "property_t", "property_type", "Property_Type",
-        "type", "Type",
+        "bldg_type", "Bldg_Type", "building_type", "Building_Type",
+        "type_of_pr", "Type_of_Pr",
+        "property_type", "Property_Type",
+        "type", "Type", "property_t",
+    ],
+    "present_status": [
+        "present_st", "Present_St", "present_status", "Present_Status",
+        "current_status", "status_present",
     ],
 }
 
