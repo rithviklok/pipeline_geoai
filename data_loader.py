@@ -61,7 +61,7 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
     ],
     "old_property_id": [
         "oldpropertyid", "old_property_id", "Old_Uid",
-        "old_uid", "OLD UID", "Old_UID",
+        "old_uid", "OLD UID", "Old_UID", "oldpropert",
     ],
     "survey_id": ["surveyid", "survey_id", "Survey_Id", "survey_id"],
     "uid": ["UID", "uid", "Uid", "UNIQUE_ID"],

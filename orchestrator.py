@@ -604,6 +604,22 @@ class PropertyTaxPipeline:
             f"({len(defaulter_df):,} total parcels — {status_counts})"
         )
 
+        # ── Dedicated Set 1 Defaulters Export (Actionable Built-Up Defaulters) ──
+        # Filters strictly to unregistered built-up properties (excluding non-taxable
+        # vacant land and exempt parcels per Punjab property tax rules).
+        set1_mask = (defaulter_df["tax_status"] == "SUSPECTED") & (
+            defaulter_df["present_status"] == "BUILT_UP"
+        )
+        set1_df = defaulter_df[set1_mask].copy()
+        set1_path = os.path.join(
+            self.config.output_dir, f"{self.config.name}_Set1_Defaulters.csv"
+        )
+        set1_df.to_csv(set1_path, index=False)
+        print(
+            f"  ★ Set 1 Defaulters saved: {set1_path} "
+            f"({len(set1_df):,} actionable built-up defaulters)"
+        )
+
         # ── GeoJSON output with full polygon geometry (every parcel) ──
         from pyproj import Transformer
         from shapely.geometry import mapping

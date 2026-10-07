@@ -330,35 +330,48 @@ class GeoAIInferencer:
     # ── Direct ID Matching ─────────────────────────────────────
 
     def _direct_id_match(self, mseva_df: pd.DataFrame) -> Dict[str, dict]:
-        """Exact matching on Old UID, Property ID, and Survey ID."""
+        """Exact matching on Survey ID / UID, Old UID, and Property ID."""
         house_df = self.kb.house_df
         cfg = self.config
         matches = {}
 
-        # Build lookup indexes from GIS
+        from .trainer import clean_identifier
+
+        # Resolve candidate GIS columns flexibly across Punjab ULBs
+        gis_survey_col = next((c for c in ["uid", "UID", "survey_id", "SURVEY ID"] if c in house_df.columns), None)
+        gis_old_col = next((c for c in ["Old_UID", "uid_old", "OLD UID", "OLD_UID", "old_uid", "Old_Uid"] if c in house_df.columns), None)
+        gis_prop_col = next((c for c in ["property_id", "PROPERTY ID", "propertyid"] if c in house_df.columns), None)
+
+        # Resolve candidate mSeva columns
+        mseva_survey_col = cfg.mseva_survey_id_col if (cfg.mseva_survey_id_col and cfg.mseva_survey_id_col in mseva_df.columns) else next((c for c in ["surveyid", "survey_id", "Survey_Id"] if c in mseva_df.columns), None)
+        mseva_old_col = cfg.mseva_old_property_id_col if (cfg.mseva_old_property_id_col and cfg.mseva_old_property_id_col in mseva_df.columns) else next((c for c in ["oldpropertyid", "oldpropert", "old_property_id"] if c in mseva_df.columns), None)
+        mseva_prop_col = cfg.mseva_property_id_col if (cfg.mseva_property_id_col and cfg.mseva_property_id_col in mseva_df.columns) else next((c for c in ["propertytaxuniqueid", "propertyid", "property_id"] if c in mseva_df.columns), None)
+
         id_fields = [
-            ("uid_old", cfg.mseva_old_property_id_col, "DIRECT_OLD_UID"),
-            ("property_id", cfg.mseva_property_id_col, "DIRECT_PROPERTY_ID"),
-            ("survey_id", cfg.mseva_survey_id_col, "DIRECT_SURVEY_ID"),
+            (gis_survey_col, mseva_survey_col, "DIRECT_SURVEY_ID"),
+            (gis_old_col, mseva_old_col, "DIRECT_OLD_UID"),
+            (gis_prop_col, mseva_prop_col, "DIRECT_PROPERTY_ID"),
+            (gis_old_col, mseva_survey_col, "DIRECT_OLD_UID"),
         ]
 
+        pid_col = cfg.mseva_property_id_col if (cfg.mseva_property_id_col and cfg.mseva_property_id_col in mseva_df.columns) else "propertytaxuniqueid"
+
         for gis_col, mseva_col, match_type in id_fields:
-            if gis_col not in house_df.columns or mseva_col not in mseva_df.columns:
+            if not gis_col or not mseva_col or gis_col not in house_df.columns or mseva_col not in mseva_df.columns:
                 continue
 
-            # Build GIS index: id → row
+            # Build GIS index: cleaned id → row
             gis_index = {}
             for idx, row in house_df.iterrows():
-                gis_id = str(row.get(gis_col, "")).strip()
-                if gis_id and gis_id not in ("", "nan", "NAN"):
+                gis_id = clean_identifier(row.get(gis_col, ""))
+                if gis_id and gis_id not in ("", "NAN"):
                     gis_index[gis_id] = row
 
-            pid_col = cfg.mseva_property_id_col
             for _, mseva_row in mseva_df.iterrows():
                 pid = mseva_row[pid_col]
                 if pid in matches:
                     continue  # Already matched
-                mseva_id = str(mseva_row.get(mseva_col, "")).strip()
+                mseva_id = clean_identifier(mseva_row.get(mseva_col, ""))
                 if mseva_id and mseva_id in gis_index:
                     gis_row = gis_index[mseva_id]
                     matches[pid] = {
