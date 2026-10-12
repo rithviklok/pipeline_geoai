@@ -23,7 +23,10 @@ from .reporting.summary import build_match_register, compute_summary, print_summ
 
 logger = logging.getLogger(__name__)
 
-_NON_EXEMPT_VALUES = {"", "na", "n/a", "none", "null", "0", "no", "n", "false"}
+_NON_EXEMPT_VALUES = {
+    "", "na", "n/a", "none", "null", "0", "no", "n", "false",
+    "taxable", "taxable property",
+}
 
 
 def _is_exempt_value(value) -> bool:
@@ -597,6 +600,7 @@ class PropertyTaxPipeline:
         defaulters_path = os.path.join(
             self.config.output_dir, f"{self.config.name}_Defaulters.csv"
         )
+        os.makedirs(self.config.output_dir, exist_ok=True)
         defaulter_df.to_csv(defaulters_path, index=False)
         status_counts = defaulter_df["tax_status"].value_counts().to_dict() if len(defaulter_df) else {}
         print(

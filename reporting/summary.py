@@ -156,7 +156,10 @@ def compute_summary(
         # Compatibility fallback for callers that do not yet pass the emitted
         # parcel register. A populated exemption-category means exempt.
         exempted_col = gis_columns.get("exempted")
-        non_exempt = {"", "na", "n/a", "none", "null", "0", "no", "n", "false"}
+        non_exempt = {
+            "", "na", "n/a", "none", "null", "0", "no", "n", "false",
+            "taxable", "taxable property",
+        }
         exempted_count = sum(
             1
             for r in gis_records

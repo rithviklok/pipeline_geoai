@@ -115,7 +115,10 @@ def load_geoai_matches(
 
     # ── Convert each row to a MatchResult ────────────────────────────
     results: Dict[str, MatchResult] = {}
-    pid_col = "propertyid"  # GeoAI output always uses this column name
+    pid_col = next(
+        (c for c in ["propertyid", "propertytaxuniqueid", "Property_ID"] if c in matched_df.columns),
+        "propertyid"
+    )
 
     for _, row in matched_df.iterrows():
         pid = str(row.get(pid_col, "")).strip()
